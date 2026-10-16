@@ -1,0 +1,83 @@
+array (
+  0 => 
+  array (
+    'Field' => 'id',
+    'Type' => 'int(11)',
+    'Null' => 'NO',
+    'Key' => 'PRI',
+    'Default' => NULL,
+    'Extra' => 'auto_increment',
+  ),
+  1 => 
+  array (
+    'Field' => 'order_id',
+    'Type' => 'int(11)',
+    'Null' => 'NO',
+    'Key' => 'MUL',
+    'Default' => NULL,
+    'Extra' => '',
+  ),
+  2 => 
+  array (
+    'Field' => 'product_id',
+    'Type' => 'int(11)',
+    'Null' => 'NO',
+    'Key' => 'MUL',
+    'Default' => NULL,
+    'Extra' => '',
+  ),
+  3 => 
+  array (
+    'Field' => 'product_name',
+    'Type' => 'varchar(255)',
+    'Null' => 'NO',
+    'Key' => '',
+    'Default' => NULL,
+    'Extra' => '',
+  ),
+  4 => 
+  array (
+    'Field' => 'variation',
+    'Type' => 'text',
+    'Null' => 'YES',
+    'Key' => '',
+    'Default' => NULL,
+    'Extra' => '',
+  ),
+  5 => 
+  array (
+    'Field' => 'quantity',
+    'Type' => 'int(11)',
+    'Null' => 'NO',
+    'Key' => '',
+    'Default' => '1',
+    'Extra' => '',
+  ),
+  6 => 
+  array (
+    'Field' => 'price',
+    'Type' => 'decimal(10,2)',
+    'Null' => 'NO',
+    'Key' => '',
+    'Default' => NULL,
+    'Extra' => '',
+  ),
+  7 => 
+  array (
+    'Field' => 'total',
+    'Type' => 'decimal(10,2)',
+    'Null' => 'NO',
+    'Key' => '',
+    'Default' => NULL,
+    'Extra' => '',
+  ),
+  8 => 
+  array (
+    'Field' => 'created_at',
+    'Type' => 'timestamp',
+    'Null' => 'NO',
+    'Key' => '',
+    'Default' => 'current_timestamp()',
+    'Extra' => '',
+  ),
+)

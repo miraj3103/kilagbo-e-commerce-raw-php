@@ -1,0 +1,63 @@
+# =========================================================
+# Kilagbo - Git Ignore Rules
+# LIVE project copied locally for development.
+# Keep source code in Git, but do NOT commit runtime media,
+# archives, live DB dumps, local backups, or machine files.
+# =========================================================
+
+# --- Runtime uploaded media ---
+# Keep uploads/index.php because it blocks direct directory listing.
+# Ignore everything else created/uploaded under uploads.
+/uploads/**
+!/uploads/index.php
+
+# The current Git log also shows a nested kilagbo/uploads path.
+# This protects that copy too until the duplicate-folder situation is cleaned up.
+/kilagbo/uploads/**
+!/kilagbo/uploads/index.php
+
+# --- Project archives / downloaded backups ---
+*.zip
+*.rar
+*.7z
+*.tar
+*.tar.gz
+*.tgz
+
+# --- Database dumps / exports ---
+# Raw live DB dumps may contain customer data, hashes, API keys, tokens, etc.
+/database.sql
+/kilagbo/database.sql
+*.sql.gz
+*.sql.zip
+
+# --- Local/live backup files ---
+*.live-backup
+*.local-backup
+*.bak
+*.backup
+*.orig
+
+# --- Environment / secrets ---
+.env
+.env.*
+!.env.example
+
+# --- OS / editor noise ---
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+
+# --- Logs / temp ---
+*.log
+*.tmp
+*.temp
+/cache/**
+/tmp/**
+/temp/**
+
+
+# Accidental duplicate project copy
+/kilagbo/

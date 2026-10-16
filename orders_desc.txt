@@ -1,0 +1,191 @@
+array (
+  0 => 
+  array (
+    'Field' => 'id',
+    'Type' => 'int(11)',
+    'Null' => 'NO',
+    'Key' => 'PRI',
+    'Default' => NULL,
+    'Extra' => 'auto_increment',
+  ),
+  1 => 
+  array (
+    'Field' => 'order_number',
+    'Type' => 'varchar(50)',
+    'Null' => 'NO',
+    'Key' => 'UNI',
+    'Default' => NULL,
+    'Extra' => '',
+  ),
+  2 => 
+  array (
+    'Field' => 'user_id',
+    'Type' => 'int(11)',
+    'Null' => 'YES',
+    'Key' => 'MUL',
+    'Default' => NULL,
+    'Extra' => '',
+  ),
+  3 => 
+  array (
+    'Field' => 'customer_name',
+    'Type' => 'varchar(100)',
+    'Null' => 'NO',
+    'Key' => '',
+    'Default' => NULL,
+    'Extra' => '',
+  ),
+  4 => 
+  array (
+    'Field' => 'customer_phone',
+    'Type' => 'varchar(20)',
+    'Null' => 'NO',
+    'Key' => '',
+    'Default' => NULL,
+    'Extra' => '',
+  ),
+  5 => 
+  array (
+    'Field' => 'customer_address',
+    'Type' => 'text',
+    'Null' => 'NO',
+    'Key' => '',
+    'Default' => NULL,
+    'Extra' => '',
+  ),
+  6 => 
+  array (
+    'Field' => 'delivery_area',
+    'Type' => 'varchar(50)',
+    'Null' => 'YES',
+    'Key' => '',
+    'Default' => NULL,
+    'Extra' => '',
+  ),
+  7 => 
+  array (
+    'Field' => 'delivery_charge',
+    'Type' => 'decimal(10,2)',
+    'Null' => 'NO',
+    'Key' => '',
+    'Default' => NULL,
+    'Extra' => '',
+  ),
+  8 => 
+  array (
+    'Field' => 'subtotal',
+    'Type' => 'decimal(10,2)',
+    'Null' => 'NO',
+    'Key' => '',
+    'Default' => NULL,
+    'Extra' => '',
+  ),
+  9 => 
+  array (
+    'Field' => 'total',
+    'Type' => 'decimal(10,2)',
+    'Null' => 'NO',
+    'Key' => '',
+    'Default' => NULL,
+    'Extra' => '',
+  ),
+  10 => 
+  array (
+    'Field' => 'payment_method',
+    'Type' => 'varchar(50)',
+    'Null' => 'YES',
+    'Key' => '',
+    'Default' => 'cod',
+    'Extra' => '',
+  ),
+  11 => 
+  array (
+    'Field' => 'status',
+    'Type' => 'enum(\'pending\',\'processing\',\'shipped\',\'delivered\',\'cancelled\')',
+    'Null' => 'YES',
+    'Key' => '',
+    'Default' => 'pending',
+    'Extra' => '',
+  ),
+  12 => 
+  array (
+    'Field' => 'steadfast_consignment_id',
+    'Type' => 'varchar(100)',
+    'Null' => 'YES',
+    'Key' => '',
+    'Default' => NULL,
+    'Extra' => '',
+  ),
+  13 => 
+  array (
+    'Field' => 'steadfast_tracking_code',
+    'Type' => 'varchar(100)',
+    'Null' => 'YES',
+    'Key' => '',
+    'Default' => NULL,
+    'Extra' => '',
+  ),
+  14 => 
+  array (
+    'Field' => 'notes',
+    'Type' => 'text',
+    'Null' => 'YES',
+    'Key' => '',
+    'Default' => NULL,
+    'Extra' => '',
+  ),
+  15 => 
+  array (
+    'Field' => 'created_at',
+    'Type' => 'timestamp',
+    'Null' => 'NO',
+    'Key' => '',
+    'Default' => 'current_timestamp()',
+    'Extra' => '',
+  ),
+  16 => 
+  array (
+    'Field' => 'updated_at',
+    'Type' => 'timestamp',
+    'Null' => 'NO',
+    'Key' => '',
+    'Default' => 'current_timestamp()',
+    'Extra' => 'on update current_timestamp()',
+  ),
+  17 => 
+  array (
+    'Field' => 'payment_type',
+    'Type' => 'varchar(20)',
+    'Null' => 'YES',
+    'Key' => '',
+    'Default' => NULL,
+    'Extra' => '',
+  ),
+  18 => 
+  array (
+    'Field' => 'payment_number',
+    'Type' => 'varchar(20)',
+    'Null' => 'YES',
+    'Key' => '',
+    'Default' => NULL,
+    'Extra' => '',
+  ),
+  19 => 
+  array (
+    'Field' => 'transaction_id',
+    'Type' => 'varchar(100)',
+    'Null' => 'YES',
+    'Key' => '',
+    'Default' => NULL,
+    'Extra' => '',
+  ),
+  20 => 
+  array (
+    'Field' => 'payment_status',
+    'Type' => 'enum(\'pending\',\'pending_verification\',\'verified\',\'rejected\')',
+    'Null' => 'YES',
+    'Key' => '',
+    'Default' => 'pending',
+    'Extra' => '',
+  ),
+)

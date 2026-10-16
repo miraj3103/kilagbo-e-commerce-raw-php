@@ -1,0 +1,83 @@
+array (
+  0 => 
+  array (
+    'Field' => 'id',
+    'Type' => 'int(11)',
+    'Null' => 'NO',
+    'Key' => 'PRI',
+    'Default' => NULL,
+    'Extra' => 'auto_increment',
+  ),
+  1 => 
+  array (
+    'Field' => 'user_type',
+    'Type' => 'enum(\'admin\',\'reseller\')',
+    'Null' => 'NO',
+    'Key' => 'MUL',
+    'Default' => NULL,
+    'Extra' => '',
+  ),
+  2 => 
+  array (
+    'Field' => 'user_id',
+    'Type' => 'int(11)',
+    'Null' => 'YES',
+    'Key' => '',
+    'Default' => NULL,
+    'Extra' => '',
+  ),
+  3 => 
+  array (
+    'Field' => 'type',
+    'Type' => 'varchar(50)',
+    'Null' => 'NO',
+    'Key' => '',
+    'Default' => NULL,
+    'Extra' => '',
+  ),
+  4 => 
+  array (
+    'Field' => 'title',
+    'Type' => 'varchar(255)',
+    'Null' => 'NO',
+    'Key' => '',
+    'Default' => NULL,
+    'Extra' => '',
+  ),
+  5 => 
+  array (
+    'Field' => 'message',
+    'Type' => 'text',
+    'Null' => 'YES',
+    'Key' => '',
+    'Default' => NULL,
+    'Extra' => '',
+  ),
+  6 => 
+  array (
+    'Field' => 'link',
+    'Type' => 'varchar(255)',
+    'Null' => 'YES',
+    'Key' => '',
+    'Default' => NULL,
+    'Extra' => '',
+  ),
+  7 => 
+  array (
+    'Field' => 'is_read',
+    'Type' => 'tinyint(1)',
+    'Null' => 'YES',
+    'Key' => '',
+    'Default' => '0',
+    'Extra' => '',
+  ),
+  8 => 
+  array (
+    'Field' => 'created_at',
+    'Type' => 'timestamp',
+    'Null' => 'NO',
+    'Key' => 'MUL',
+    'Default' => 'current_timestamp()',
+    'Extra' => '',
+  ),
+)

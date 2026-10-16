@@ -1,0 +1,189 @@
+RewriteEngine On
+# RewriteBase /
+
+# Force HTTPS and WWW (Only on Production)
+RewriteCond %{HTTP_HOST} !^localhost [NC]
+RewriteCond %{HTTP_HOST} !^127\.0\.0\.1 [NC]
+RewriteCond %{HTTPS} off [OR]
+RewriteCond %{HTTP_HOST} !^www\. [NC]
+RewriteRule ^(.*)$ https://www.kilagbo.com/$1 [L,R=301]
+
+# Prevent directory listing
+Options -Indexes
+
+# Handle Authorization Header
+RewriteCond %{HTTP:Authorization} .
+RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
+
+# Admin routes
+RewriteRule ^superadmin/?$ superadmin/index.php [L,QSA]
+RewriteRule ^superadmin/login/?$ superadmin/login.php [L,QSA]
+RewriteRule ^superadmin/logout/?$ superadmin/logout.php [L,QSA]
+RewriteRule ^superadmin/dashboard/?$ superadmin/dashboard.php [L,QSA]
+RewriteRule ^superadmin/products/?$ superadmin/products.php [L,QSA]
+RewriteRule ^superadmin/products/add/?$ superadmin/product-add.php [L,QSA]
+RewriteRule ^superadmin/products/edit/([0-9]+)/?$ superadmin/product-edit.php?id=$1 [L,QSA]
+RewriteRule ^superadmin/orders/?$ superadmin/orders.php [L,QSA]
+RewriteRule ^superadmin/orders/view/([0-9]+)/?$ superadmin/order-view.php?id=$1 [L,QSA]
+RewriteRule ^superadmin/carousel/?$ superadmin/carousel.php [L,QSA]
+RewriteRule ^superadmin/categories/?$ superadmin/categories.php [L,QSA]
+RewriteRule ^superadmin/courier/?$ superadmin/courier.php [L,QSA]
+RewriteRule ^superadmin/pixel-gtm/?$ superadmin/pixel-gtm.php [L,QSA]
+RewriteRule ^superadmin/social-login/?$ superadmin/social-login.php [L,QSA]
+RewriteRule ^superadmin/contacts/?$ superadmin/contacts.php [L,QSA]
+RewriteRule ^superadmin/settings/?$ superadmin/settings.php [L,QSA]
+RewriteRule ^superadmin/retail-delivery/?$ superadmin/retail-delivery.php [L,QSA]
+RewriteRule ^superadmin/payment-accounts/?$ superadmin/payment-accounts.php [L,QSA]
+
+# Admin Services routes
+RewriteRule ^superadmin/services/?$ superadmin/services.php [L,QSA]
+RewriteRule ^superadmin/service-add/?$ superadmin/service-add.php [L,QSA]
+RewriteRule ^superadmin/service-edit/([0-9]+)/?$ superadmin/service-edit.php?id=$1 [L,QSA]
+RewriteRule ^superadmin/service-orders/?$ superadmin/service-orders.php [L,QSA]
+
+# Admin Digital Products routes
+RewriteRule ^superadmin/digital-products/?$ superadmin/digital-products.php [L,QSA]
+RewriteRule ^superadmin/digital-product-add/?$ superadmin/digital-product-add.php [L,QSA]
+RewriteRule ^superadmin/digital-product-edit/([0-9]+)/?$ superadmin/digital-product-edit.php?id=$1 [L,QSA]
+RewriteRule ^superadmin/digital-orders/?$ superadmin/digital-orders.php [L,QSA]
+
+# Admin AJAX routes
+RewriteRule ^superadmin/ajax/mark-notifications-read/?$ superadmin/ajax/mark-notifications-read.php [L,QSA]
+RewriteRule ^superadmin/ajax/clear-notifications/?$ superadmin/ajax/clear-notifications.php [L,QSA]
+
+# Admin Wholesale routes
+RewriteRule ^superadmin/wholesale-products/?$ superadmin/wholesale-products.php [L,QSA]
+RewriteRule ^superadmin/wholesale-add/?$ superadmin/wholesale-add.php [L,QSA]
+RewriteRule ^superadmin/wholesale-add-new/?$ superadmin/wholesale-add-new.php [L,QSA]
+RewriteRule ^superadmin/wholesale-edit/([0-9]+)/?$ superadmin/wholesale-edit.php?id=$1 [L,QSA]
+RewriteRule ^superadmin/wholesale-orders/?$ superadmin/wholesale-orders.php [L,QSA]
+RewriteRule ^superadmin/wholesale-order-view/([0-9]+)/?$ superadmin/wholesale-order-view.php?id=$1 [L,QSA]
+RewriteRule ^superadmin/wholesale-categories/?$ superadmin/wholesale-categories.php [L,QSA]
+RewriteRule ^superadmin/wholesale-delivery/?$ superadmin/wholesale-delivery.php [L,QSA]
+
+# Admin Reselling routes
+RewriteRule ^superadmin/resell-products/?$ superadmin/resell-products.php [L,QSA]
+RewriteRule ^superadmin/resell-add/?$ superadmin/resell-add.php [L,QSA]
+RewriteRule ^superadmin/resell-add-new/?$ superadmin/resell-add-new.php [L,QSA]
+RewriteRule ^superadmin/resell-edit/([0-9]+)/?$ superadmin/resell-edit.php?id=$1 [L,QSA]
+RewriteRule ^superadmin/resell-orders/?$ superadmin/resell-orders.php [L,QSA]
+RewriteRule ^superadmin/resell-order-view/([0-9]+)/?$ superadmin/resell-order-view.php?id=$1 [L,QSA]
+RewriteRule ^superadmin/resellers/?$ superadmin/resellers.php [L,QSA]
+RewriteRule ^superadmin/reseller-view/([0-9]+)/?$ superadmin/reseller-view.php?id=$1 [L,QSA]
+RewriteRule ^superadmin/resell-payments/?$ superadmin/resell-payments.php [L,QSA]
+RewriteRule ^superadmin/resell-delivery/?$ superadmin/resell-delivery.php [L,QSA]
+
+# Admin Seller routes
+RewriteRule ^superadmin/seller-products/?$ superadmin/seller-products.php [L,QSA]
+RewriteRule ^superadmin/sellers/?$ superadmin/sellers.php [L,QSA]
+RewriteRule ^superadmin/seller-view/?$ superadmin/seller-view.php [L,QSA]
+RewriteRule ^superadmin/seller-view/([0-9]+)/?$ superadmin/seller-view.php?id=$1 [L,QSA]
+RewriteRule ^superadmin/seller-activity/?$ superadmin/seller-activity.php [L,QSA]
+
+# Frontend routes
+RewriteRule ^login/?$ login.php [L,QSA]
+RewriteRule ^registration/?$ registration.php [L,QSA]
+RewriteRule ^logout/?$ logout.php [L,QSA]
+RewriteRule ^shop/?$ shop.php [L,QSA]
+RewriteRule ^product/(.+)/?$ product.php?slug=$1 [L,QSA]
+RewriteRule ^category/(.+)/?$ category.php?slug=$1 [L,QSA]
+RewriteRule ^checkout/?$ checkout.php [L,QSA]
+RewriteRule ^cart/?$ cart.php [L,QSA]
+RewriteRule ^wishlist/?$ wishlist.php [L,QSA]
+RewriteRule ^account/?$ account.php [L,QSA]
+RewriteRule ^order-success/?$ order-success.php [L,QSA]
+RewriteRule ^hot-deals/?$ hot-deals.php [L,QSA]
+RewriteRule ^quick-order/?$ quick-order.php [L,QSA]
+RewriteRule ^auth-callback/?$ auth-callback.php [L,QSA]
+
+# Digital Services routes
+RewriteRule ^digital-services/?$ digital-services.php [L,QSA]
+RewriteRule ^service/(.+)/?$ service.php?slug=$1 [L,QSA]
+
+# Digital Products routes
+RewriteRule ^digital-products/?$ digital-products.php [L,QSA]
+RewriteRule ^digital-product/(.+)/?$ digital-product.php?slug=$1 [L,QSA]
+
+# Wholesale frontend routes
+RewriteRule ^wholesale/?$ wholesale/index.php [L,QSA]
+RewriteRule ^wholesale/shop/?$ wholesale/shop.php [L,QSA]
+RewriteRule ^wholesale/product/([^/]+)/?$ wholesale/product.php?slug=$1 [L,QSA]
+RewriteRule ^wholesale/category/([^/]+)/?$ wholesale/category.php?slug=$1 [L,QSA]
+RewriteRule ^wholesale/hot-deals/?$ wholesale/hot-deals.php [L,QSA]
+RewriteRule ^wholesale/cart/?$ wholesale/cart.php [L,QSA]
+RewriteRule ^wholesale/checkout/?$ wholesale/checkout.php [L,QSA]
+
+# Affiliate frontend routes
+RewriteRule ^affiliate/?$ affiliate/index.php [L,QSA]
+RewriteRule ^affiliate/login/?$ affiliate/login.php [L,QSA]
+RewriteRule ^affiliate/register/?$ affiliate/register.php [L,QSA]
+RewriteRule ^affiliate/logout/?$ affiliate/logout.php [L,QSA]
+RewriteRule ^affiliate/pending/?$ affiliate/pending.php [L,QSA]
+RewriteRule ^affiliate/products/?$ affiliate/products.php [L,QSA]
+RewriteRule ^affiliate/orders/?$ affiliate/orders.php [L,QSA]
+RewriteRule ^affiliate/withdraw/?$ affiliate/withdraw.php [L,QSA]
+RewriteRule ^affiliate/profile/?$ affiliate/profile.php [L,QSA]
+
+# Affiliate short link (for tracking)
+RewriteRule ^a/([a-zA-Z0-9]+)/?$ affiliate-product.php?ref=$1 [L,QSA]
+
+# Affiliate store routes
+RewriteRule ^store/([a-zA-Z0-9]+)/categories/?$ affiliate-store-categories.php?code=$1 [L,QSA]
+RewriteRule ^store/([a-zA-Z0-9]+)/?$ affiliate-store.php?code=$1 [L,QSA]
+RewriteRule ^store-product/([a-zA-Z0-9]+)/([0-9]+)/?$ affiliate-store-product.php?store=$1&product=$2 [L,QSA]
+
+# Reseller frontend routes
+RewriteRule ^resell/?$ resell/index.php [L,QSA]
+RewriteRule ^resell/login/?$ resell/login.php [L,QSA]
+RewriteRule ^resell/register/?$ resell/register.php [L,QSA]
+RewriteRule ^resell/logout/?$ resell/logout.php [L,QSA]
+RewriteRule ^resell/pending/?$ resell/pending.php [L,QSA]
+RewriteRule ^resell/products/?$ resell/products.php [L,QSA]
+RewriteRule ^resell/order/?$ resell/order.php [L,QSA]
+RewriteRule ^resell/orders/?$ resell/orders.php [L,QSA]
+RewriteRule ^resell/order-details/?$ resell/order-details.php [L,QSA]
+RewriteRule ^resell/withdraw/?$ resell/withdraw.php [L,QSA]
+RewriteRule ^resell/profile/?$ resell/profile.php [L,QSA]
+RewriteRule ^reseller/login/?$ resell/login.php [L,QSA]
+RewriteRule ^reseller/register/?$ resell/register.php [L,QSA]
+RewriteRule ^resell/auth/google/?$ resell/auth/google.php [L,QSA]
+RewriteRule ^resell/auth/facebook/?$ resell/auth/facebook.php [L,QSA]
+
+# Seller frontend routes
+RewriteRule ^seller/?$ seller/welcome.php [L,QSA]
+RewriteRule ^seller/welcome/?$ seller/welcome.php [L,QSA]
+RewriteRule ^seller/login/?$ seller/login.php [L,QSA]
+RewriteRule ^seller/register/?$ seller/register.php [L,QSA]
+RewriteRule ^seller/logout/?$ seller/logout.php [L,QSA]
+RewriteRule ^seller/pending/?$ seller/pending.php [L,QSA]
+RewriteRule ^seller/dashboard/?$ seller/index.php [L,QSA]
+RewriteRule ^seller/index/?$ seller/index.php [L,QSA]
+RewriteRule ^seller/add-product/?$ seller/add-product.php [L,QSA]
+RewriteRule ^seller/products/?$ seller/products.php [L,QSA]
+RewriteRule ^seller/orders/?$ seller/orders.php [L,QSA]
+RewriteRule ^seller/revenue/?$ seller/revenue.php [L,QSA]
+RewriteRule ^seller/profile/?$ seller/profile.php [L,QSA]
+
+# Admin Affiliate routes
+RewriteRule ^superadmin/affiliate-products/?$ superadmin/affiliate-products.php [L,QSA]
+RewriteRule ^superadmin/affiliate-add/?$ superadmin/affiliate-add.php [L,QSA]
+RewriteRule ^superadmin/affiliate-add-wholesale/?$ superadmin/affiliate-add-wholesale.php [L,QSA]
+RewriteRule ^superadmin/affiliate-add-new/?$ superadmin/affiliate-add-new.php [L,QSA]
+RewriteRule ^superadmin/affiliate-edit/([0-9]+)/?$ superadmin/affiliate-edit.php?id=$1 [L,QSA]
+RewriteRule ^superadmin/affiliate-orders/?$ superadmin/affiliate-orders.php [L,QSA]
+RewriteRule ^superadmin/affiliate-order-view/([0-9]+)/?$ superadmin/affiliate-order-view.php?id=$1 [L,QSA]
+RewriteRule ^superadmin/affiliators/?$ superadmin/affiliators.php [L,QSA]
+RewriteRule ^superadmin/affiliator-view/([0-9]+)/?$ superadmin/affiliator-view.php?id=$1 [L,QSA]
+RewriteRule ^superadmin/affiliate-payments/?$ superadmin/affiliate-payments.php [L,QSA]
+RewriteRule ^superadmin/affiliate-delivery/?$ superadmin/affiliate-delivery.php [L,QSA]
+
+# Main pages
+RewriteRule ^retail/?$ index.php [L,QSA]
+RewriteRule ^reselling/?$ resell/login.php [L,QSA]
+
+# Error pages
+# Error handling
+# Route non-existent files to 404.php instead of using ErrorDocument (which requires absolute paths)
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteRule . 404.php [L]
