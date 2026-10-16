@@ -17,29 +17,50 @@ error_reporting(0);
 ini_set('display_errors', 0);
 
 // Database and Site configuration
-$is_localhost = ($_SERVER['SERVER_NAME'] == 'localhost' || $_SERVER['SERVER_NAME'] == '127.0.0.1');
+// Local Laragon hosts (e.g. kilagbo.test) must use the local database and must NOT redirect to production.
+$host = strtolower($_SERVER['HTTP_HOST'] ?? $_SERVER['SERVER_NAME'] ?? 'localhost');
+$host = preg_replace('/:\d+$/', '', $host);
+
+$is_localhost = (
+    $host === 'localhost' ||
+    $host === '127.0.0.1' ||
+    $host === 'kilagbo.test' ||
+    $host === 'www.kilagbo.test' ||
+    substr($host, -5) === '.test'
+);
 
 if ($is_localhost) {
-    // Localhost configuration (XAMPP)
-    define('DB_HOST', 'localhost');
-    define('DB_NAME', 'kilagbo'); // Adjust if you named your local DB differently
-    define('DB_USER', 'root');
-    define('DB_PASS', '');
-    
-    // Auto-detect base URL dynamically
-    // This allows the project to be in any folder name on localhost
-    $projectRoot = str_replace('\\', '/', dirname(__DIR__));
-    $docRoot = str_replace('\\', '/', rtrim($_SERVER['DOCUMENT_ROOT'], '/'));
-    $relativePath = str_replace($docRoot, '', $projectRoot);
-    
-    define('SITE_URL', 'http://' . $_SERVER['HTTP_HOST'] . $relativePath);
-} else {
-    // Production configuration
+    // Local Laragon configuration
     define('DB_HOST', 'localhost');
     define('DB_NAME', 'kilagbo');
     define('DB_USER', 'root');
     define('DB_PASS', '');
-    define('SITE_URL', 'https://www.kilagbo.test');
+
+    // Auto-detect base URL.
+    // With Laragon vhost this becomes http://kilagbo.test
+    // With localhost subfolder usage this becomes http://localhost/kilagbo
+    $projectRoot = str_replace('\\', '/', dirname(__DIR__));
+    $docRoot = str_replace('\\', '/', rtrim($_SERVER['DOCUMENT_ROOT'], '/\\'));
+    $relativePath = '';
+
+    if ($docRoot !== '' && stripos($projectRoot, $docRoot) === 0) {
+        $relativePath = substr($projectRoot, strlen($docRoot));
+    }
+
+    $relativePath = '/' . trim($relativePath, '/');
+    if ($relativePath === '/') {
+        $relativePath = '';
+    }
+
+    define('SITE_URL', 'http://' . ($_SERVER['HTTP_HOST'] ?? $host) . $relativePath);
+} else {
+    // LIVE CONFIG REQUIRED BEFORE DEPLOYMENT.
+    // Replace these placeholders with the real production database values.
+    define('DB_HOST', 'localhost');
+    define('DB_NAME', '__LIVE_DB_NAME__');
+    define('DB_USER', '__LIVE_DB_USER__');
+    define('DB_PASS', '__LIVE_DB_PASS__');
+    define('SITE_URL', 'https://www.kilagbo.com');
 }
 
 define('ADMIN_URL', SITE_URL . '/superadmin');
