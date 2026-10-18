@@ -9,6 +9,7 @@ error_reporting(E_ALL);
 ini_set('display_errors', 1);
 
 require_once __DIR__ . '/config.php';
+require_once __DIR__ . '/../includes/resell-shortfall.php';
 
 $pageTitle = 'অর্ডার করুন';
 $currentPage = 'products';
@@ -60,56 +61,77 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $shippingAddress = sanitize($_POST['shipping_address'] ?? '');
     $deliveryChargeId = intval($_POST['delivery_charge_id'] ?? 0);
     $quantity = max(1, intval($_POST['quantity'] ?? 1));
-    $resellerPrice = floatval($_POST['reseller_price'] ?? 0);
+    $resellerPriceRaw = $_POST['reseller_price'] ?? null;
+    $resellerPrice = ($resellerPriceRaw === null || trim((string)$resellerPriceRaw) === '') ? 0.0 : floatval($resellerPriceRaw);
     $notes = sanitize($_POST['notes'] ?? '');
     $paymentMethod = sanitize($_POST['payment_method'] ?? 'cod');
     $variations = sanitize($_POST['variations'] ?? '');
-    
+
     // Online payment details
     $onlinePaymentType = sanitize($_POST['online_payment_type'] ?? '');
     $paymentNumber = sanitize($_POST['payment_number'] ?? '');
     $transactionId = sanitize($_POST['transaction_id'] ?? '');
-    
-    // Calculate costs
-    $originalPrice = $product['reseller_price'] * $quantity;
-    
-    // Get delivery charge - custom or selected
-    if ($hasCustomCharge) {
-        $deliveryCharge = $customDeliveryCharge;
-        $shippingArea = 'custom';
-    } else {
-        $deliveryCharge = getResellDeliveryCharge($deliveryChargeId);
-        // Get delivery charge name for shipping_area
-        $stmt = $pdo->prepare("SELECT name FROM resell_delivery_charges WHERE id = ?");
-        $stmt->execute([$deliveryChargeId]);
-        $dcInfo = $stmt->fetch();
-        $shippingArea = $dcInfo ? $dcInfo['name'] : 'default';
-    }
-    
-    $totalCost = $originalPrice + $deliveryCharge;
-    $totalResellerPrice = $resellerPrice * $quantity;
-    $profit = $totalResellerPrice - $totalCost;
-    
-    // Validation
+
+    // NOTE 08: zero selling price is valid. Only negative values are invalid.
     if ($paymentMethod === 'online' && (empty($paymentNumber) || empty($transactionId))) {
         $error = 'অনলাইন পেমেন্টের জন্য পেমেন্ট নম্বর এবং Transaction ID আবশ্যক';
     } elseif (empty($customerName) || empty($customerPhone) || empty($shippingAddress)) {
         $error = 'সব প্রয়োজনীয় ফিল্ড পূরণ করুন';
-    } elseif ($resellerPrice <= 0) {
+    } elseif ($resellerPriceRaw === null || trim((string)$resellerPriceRaw) === '') {
         $error = 'আপনার বিক্রয় মূল্য দিন';
-    } elseif ($totalResellerPrice < $totalCost) {
-        $minPrice = ceil($totalCost / $quantity);
-        $error = "আপনার বিক্রয় মূল্য কম। ন্যূনতম মূল্য প্রতি পিস: " . formatPrice($minPrice) . " (পণ্য মূল্য + ডেলিভারি চার্জ)";
+    } elseif ($resellerPrice < 0) {
+        $error = 'বিক্রয় মূল্য ঋণাত্মক হতে পারবে না';
     } elseif ($product['stock_quantity'] !== null && $quantity > $product['stock_quantity']) {
         $error = 'স্টকে এত পণ্য নেই। স্টক: ' . $product['stock_quantity'];
     } else {
         try {
-            // Apply online payment discount if applicable
+            $pdo->beginTransaction();
+
+            // Lock reseller balance so a below-cost order cannot race another deduction.
+            $balanceStmt = $pdo->prepare("SELECT balance FROM resellers WHERE id = ? FOR UPDATE");
+            $balanceStmt->execute([$resellerId]);
+            $lockedBalance = (float)($balanceStmt->fetchColumn() ?: 0);
+            if ($lockedBalance < $minBalance) {
+                throw new Exception('অর্ডার করতে হলে আপনার ব্যালেন্স নূন্যতম ' . formatPrice($minBalance) . ' টাকা হতে হবে।');
+            }
+
+            // Lock and re-read the product price/stock before calculating the order.
+            $productStmt = $pdo->prepare("SELECT * FROM resell_products WHERE id = ? AND status = 1 FOR UPDATE");
+            $productStmt->execute([$productId]);
+            $lockedProduct = $productStmt->fetch();
+            if (!$lockedProduct) {
+                throw new Exception('পণ্যটি আর উপলব্ধ নেই');
+            }
+            if ($lockedProduct['stock_quantity'] !== null && $quantity > (int)$lockedProduct['stock_quantity']) {
+                throw new Exception('স্টকে এত পণ্য নেই। স্টক: ' . $lockedProduct['stock_quantity']);
+            }
+
+            // Delivery charge - current custom charge or selected active area.
+            $lockedCustomDeliveryCharge = getResellProductDeliveryCharge($productId);
+            if ($lockedCustomDeliveryCharge !== null) {
+                $deliveryCharge = (float)$lockedCustomDeliveryCharge;
+                $shippingArea = 'custom';
+            } else {
+                $deliveryCharge = (float)getResellDeliveryCharge($deliveryChargeId);
+                $dcStmt = $pdo->prepare("SELECT name FROM resell_delivery_charges WHERE id = ? AND status = 1");
+                $dcStmt->execute([$deliveryChargeId]);
+                $dcInfo = $dcStmt->fetch();
+                if (!$dcInfo) {
+                    throw new Exception('ডেলিভারি চার্জ নির্বাচন করুন');
+                }
+                $shippingArea = $dcInfo['name'];
+            }
+
+            $originalPrice = (float)$lockedProduct['reseller_price'] * $quantity;
+            $totalResellerPrice = $resellerPrice * $quantity;
+            $totalCost = $originalPrice + $deliveryCharge;
+
+            // Apply existing online payment discount before final profit/shortfall.
             $onlinePaymentDiscount = 0;
             if ($paymentMethod === 'online') {
                 $discountType = getSettings('online_payment_discount_type_resell') ?? 'fixed';
                 $discountValue = floatval(getSettings('online_payment_discount_value_resell') ?? 0);
-                
+
                 if ($discountValue > 0) {
                     if ($discountType === 'percentage') {
                         $onlinePaymentDiscount = ($totalCost * $discountValue) / 100;
@@ -117,35 +139,36 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $onlinePaymentDiscount = $discountValue;
                     }
                     $totalCost = max(0, $totalCost - $onlinePaymentDiscount);
-                    $profit = $totalResellerPrice - $totalCost;
                 }
             }
-            
+
+            $profit = round($totalResellerPrice - $totalCost, 2);
+            $shortfall = round(max(0, $totalCost - $totalResellerPrice), 2);
+            if ($shortfall > $lockedBalance) {
+                throw new Exception('এই কম/শূন্য বিক্রয় মূল্যের জন্য ব্যালেন্সে পর্যাপ্ত টাকা নেই। ঘাটতি: ' . formatPrice($shortfall) . ', বর্তমান ব্যালেন্স: ' . formatPrice($lockedBalance));
+            }
+
             // Generate order number
             $orderNumber = 'RS' . date('Ymd') . strtoupper(substr(uniqid(), -4));
-            
-            // Determine payment status
             $paymentStatus = $paymentMethod === 'online' ? 'pending_verification' : 'pending';
-            
+
             // Ensure variations is valid JSON or null
             $variationsJson = null;
             if (!empty($variations)) {
-                // Try to decode to check if it's already JSON
                 $decoded = json_decode($variations);
                 if (json_last_error() === JSON_ERROR_NONE) {
                     $variationsJson = $variations;
                 } else {
-                    // It's a string, encode it as a JSON string
                     $variationsJson = json_encode($variations);
                 }
             }
-            
-            // Create order with payment info
+
             $stmt = $pdo->prepare("
-                INSERT INTO resell_orders 
-                (order_number, reseller_id, customer_name, customer_phone, customer_email, shipping_address, shipping_area, 
-                 original_price, delivery_charge, reseller_price, profit, notes, payment_method, payment_type, payment_number, transaction_id, payment_status) 
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO resell_orders
+                (order_number, reseller_id, customer_name, customer_phone, customer_email, shipping_address, shipping_area,
+                 original_price, delivery_charge, reseller_price, profit, shortfall_amount, shortfall_deducted, shortfall_refunded,
+                 notes, payment_method, payment_type, payment_number, transaction_id, payment_status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ");
             $stmt->execute([
                 $orderNumber,
@@ -159,6 +182,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $deliveryCharge,
                 $totalResellerPrice,
                 $profit,
+                $shortfall,
+                $shortfall > 0 ? 1 : 0,
+                0,
                 $notes,
                 $paymentMethod,
                 $onlinePaymentType,
@@ -166,45 +192,51 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $transactionId,
                 $paymentStatus
             ]);
-            $orderId = $pdo->lastInsertId();
-            
+            $orderId = (int)$pdo->lastInsertId();
+
+            if ($shortfall > 0) {
+                resellDeductOrderShortfall($pdo, [
+                    'id' => $orderId,
+                    'reseller_id' => $resellerId,
+                    'order_number' => $orderNumber,
+                ], $shortfall, 'order');
+            }
+
             // Add order item
             $stmt = $pdo->prepare("
-                INSERT INTO resell_order_items 
-                (order_id, resell_product_id, product_name, product_image, variation, quantity, original_price, reseller_price) 
+                INSERT INTO resell_order_items
+                (order_id, resell_product_id, product_name, product_image, variation, quantity, original_price, reseller_price)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ");
             $stmt->execute([
                 $orderId,
-                $product['id'],
-                $product['name'],
-                $product['image'],
+                $lockedProduct['id'],
+                $lockedProduct['name'],
+                $lockedProduct['image'],
                 $variationsJson,
                 $quantity,
-                $product['reseller_price'],
+                $lockedProduct['reseller_price'],
                 $resellerPrice
             ]);
-            
-            // Update reseller stats
+
             $pdo->prepare("UPDATE resellers SET total_orders = total_orders + 1 WHERE id = ?")->execute([$resellerId]);
-            
-            // Add notification
+
             $notifStmt = $pdo->prepare("INSERT INTO notifications (user_type, type, title, link, user_id, is_read) VALUES ('admin', 'resell_order', ?, ?, NULL, 0)");
             $notifStmt->execute(["নতুন রিসেল অর্ডার #$orderNumber", "resell-orders"]);
-            
-            setFlash('success', "অর্ডার সফল! অর্ডার নম্বর: $orderNumber");
-            
-            // Debug redirection issues
+
+            $pdo->commit();
+            setFlash('success', "অর্ডার সফল! অর্ডার নম্বর: $orderNumber" . ($shortfall > 0 ? ' | ব্যালেন্স থেকে কর্তন: ' . formatPrice($shortfall) : ''));
+
             if (headers_sent()) {
                 echo "<script>window.location.href='" . baseUrl('resell/orders.php') . "';</script>";
                 exit;
-            } else {
-                redirect(baseUrl('resell/orders.php'));
             }
-
-        } catch (Exception $e) {
+            redirect(baseUrl('resell/orders.php'));
+        } catch (Throwable $e) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
             $error = "অর্ডার প্লেস করার সময় সমস্যা হয়েছে: " . $e->getMessage();
-            // Log error for debugging
             error_log("Order Error: " . $e->getMessage());
         }
     }
@@ -222,7 +254,7 @@ include __DIR__ . '/includes/header.php';
         max-width: 900px;
         margin: 0 auto;
     }
-    
+
     .order-card {
         background: #fff;
         border-radius: 12px;
@@ -230,14 +262,14 @@ include __DIR__ . '/includes/header.php';
         box-shadow: 0 2px 10px rgba(0,0,0,0.05);
         margin-bottom: 20px;
     }
-    
+
     .order-card h5 {
         font-weight: 600;
         margin-bottom: 20px;
         padding-bottom: 15px;
         border-bottom: 1px solid #eee;
     }
-    
+
     .product-preview {
         display: flex;
         gap: 20px;
@@ -246,52 +278,52 @@ include __DIR__ . '/includes/header.php';
         border-radius: 10px;
         margin-bottom: 20px;
     }
-    
+
     .product-preview img {
         width: 100px;
         height: 100px;
         object-fit: cover;
         border-radius: 10px;
     }
-    
+
     .product-preview .info h6 {
         font-weight: 600;
         margin-bottom: 10px;
     }
-    
+
     .product-preview .info .price {
         font-size: 1.2rem;
         color: var(--primary);
         font-weight: 700;
     }
-    
+
     .form-label {
         font-weight: 500;
     }
-    
+
     .price-calculator {
         background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
         border-radius: 12px;
         padding: 20px;
         color: #fff;
     }
-    
+
     .price-calculator h5 {
         border-bottom-color: rgba(255,255,255,0.2);
         color: #fff;
     }
-    
+
     .calc-row {
         display: flex;
         justify-content: space-between;
         padding: 8px 0;
         border-bottom: 1px solid rgba(255,255,255,0.1);
     }
-    
+
     .calc-row:last-child {
         border-bottom: none;
     }
-    
+
     .calc-row.profit {
         font-size: 1.2rem;
         font-weight: 700;
@@ -299,10 +331,10 @@ include __DIR__ . '/includes/header.php';
         margin-top: 10px;
         border-top: 2px solid rgba(255,255,255,0.3);
     }
-    
+
     .profit-positive { color: #2ecc71; }
     .profit-negative { color: #e74c3c; }
-    
+
     .btn-submit {
         width: 100%;
         padding: 15px;
@@ -313,13 +345,13 @@ include __DIR__ . '/includes/header.php';
         border-radius: 10px;
         color: #fff;
     }
-    
+
     .btn-submit:hover {
         transform: translateY(-2px);
         box-shadow: 0 10px 30px rgba(102,126,234,0.3);
         color: #fff;
     }
-    
+
     .note-box {
         background: #fff3cd;
         border-radius: 10px;
@@ -335,19 +367,19 @@ include __DIR__ . '/includes/header.php';
         <i class="bi bi-exclamation-circle me-2"></i><?php echo $error; ?>
     </div>
     <?php endif; ?>
-    
+
     <div class="note-box">
         <i class="bi bi-info-circle me-2"></i>
-        <strong>মনে রাখুন:</strong> <?php echo getSettings('reselling_commission_note') ?: 'আপনার প্রফিট = আপনার বিক্রয় মূল্য - (পণ্যের মূল্য + ডেলিভারি চার্জ)'; ?>
+        <strong>মনে রাখুন:</strong> <?php echo getSettings('reselling_commission_note') ?: 'আপনার প্রফিট = আপনার বিক্রয় মূল্য - (পণ্যের মূল্য + ডেলিভারি চার্জ)'; ?> শূন্য বা মোট খরচের কম দামে বিক্রি করলে ঘাটতি আপনার ব্যালেন্স থেকে কাটা হবে।
     </div>
-    
+
     <form method="POST" id="orderForm">
         <input type="hidden" name="variations" value="<?php echo htmlspecialchars($variationsParam); ?>">
         <div class="row">
             <div class="col-lg-7">
                 <div class="order-card">
                     <h5><i class="bi bi-box-seam me-2"></i>পণ্য তথ্য</h5>
-                    
+
                     <div class="product-preview">
                         <img src="<?php echo imageUrl($product['image']); ?>" alt="">
                         <div class="info">
@@ -355,7 +387,7 @@ include __DIR__ . '/includes/header.php';
                             <p class="price"><?php echo formatPrice($product['reseller_price']); ?> / পিস</p>
                             <?php if (!empty($variationsParam)): ?>
                             <div class="mb-1">
-                                <?php 
+                                <?php
                                 $vars = explode(',', $variationsParam);
                                 foreach($vars as $var) {
                                     $parts = explode(':', $var);
@@ -369,7 +401,7 @@ include __DIR__ . '/includes/header.php';
                             <small class="text-muted">স্টক: <?php echo $product['stock_quantity'] !== null ? $product['stock_quantity'] . ' পিস' : 'আনলিমিটেড'; ?></small>
                         </div>
                     </div>
-                    
+
                     <div class="row g-3">
                         <div class="col-md-6">
                             <label class="form-label">পরিমাণ *</label>
@@ -377,14 +409,14 @@ include __DIR__ . '/includes/header.php';
                         </div>
                         <div class="col-md-6">
                             <label class="form-label">আপনার বিক্রয় মূল্য (প্রতি পিস) *</label>
-                            <input type="number" class="form-control" name="reseller_price" id="resellerPrice" placeholder="যেমন: ৫০০" value="<?php echo $product['suggested_selling_price'] ?: ''; ?>" required>
+                            <input type="number" class="form-control" name="reseller_price" id="resellerPrice" placeholder="যেমন: ৫০০" value="<?php echo $product['suggested_selling_price'] ?: ''; ?>" min="0" step="0.01" required>
                         </div>
                     </div>
                 </div>
-                
+
                 <div class="order-card">
                     <h5><i class="bi bi-person me-2"></i>কাস্টমার তথ্য</h5>
-                    
+
                     <div class="row g-3">
                         <div class="col-md-6">
                             <label class="form-label">কাস্টমারের নাম *</label>
@@ -431,20 +463,20 @@ include __DIR__ . '/includes/header.php';
                         </div>
                     </div>
                 </div>
-                
+
                 <!-- Payment Method -->
                 <div class="order-card">
-                    <?php 
+                    <?php
                     $sectionType = 'resell';
                     include __DIR__ . '/../includes/payment-method.php';
                     ?>
                 </div>
             </div>
-            
+
             <div class="col-lg-5">
                 <div class="order-card price-calculator">
                     <h5><i class="bi bi-calculator me-2"></i>হিসাব</h5>
-                    
+
                     <div class="calc-row">
                         <span>পণ্য মূল্য:</span>
                         <span id="productTotal"><?php echo formatPrice($product['reseller_price']); ?></span>
@@ -461,16 +493,20 @@ include __DIR__ . '/includes/header.php';
                         <span>আপনার বিক্রয় মূল্য:</span>
                         <span id="resellerTotal">৳০</span>
                     </div>
+                    <div class="calc-row">
+                        <span>ব্যালেন্স থেকে কর্তন:</span>
+                        <span id="shortfallAmount">৳০</span>
+                    </div>
                     <div class="calc-row profit">
                         <span>আপনার প্রফিট:</span>
                         <span id="profitAmount" class="profit-negative">৳০</span>
                     </div>
                 </div>
-                
+
                 <button type="submit" class="btn btn-submit mt-3">
                     <i class="bi bi-check-circle me-2"></i>অর্ডার কনফার্ম করুন
                 </button>
-                
+
                 <a href="<?php echo baseUrl('resell/products.php'); ?>" class="btn btn-outline-secondary w-100 mt-2">
                     <i class="bi bi-arrow-left me-2"></i>পণ্যে ফিরুন
                 </a>
@@ -492,7 +528,7 @@ function getSelectedDeliveryCharge() {
     if (hasCustomCharge) {
         return customDeliveryCharge;
     }
-    
+
     const select = document.getElementById('deliveryChargeSelect');
     if (select) {
         const selectedOption = select.options[select.selectedIndex];
@@ -505,16 +541,18 @@ function calculate() {
     const quantity = parseInt(document.getElementById('quantity').value) || 1;
     const resellerPrice = parseFloat(document.getElementById('resellerPrice').value) || 0;
     const deliveryCharge = getSelectedDeliveryCharge();
-    
+
     const productTotal = productPrice * quantity;
     const totalCost = productTotal + deliveryCharge;
     const resellerTotal = resellerPrice * quantity;
     const profit = resellerTotal - totalCost;
-    
+    const shortfall = Math.max(0, totalCost - resellerTotal);
+
     document.getElementById('productTotal').textContent = formatPrice(productTotal);
     document.getElementById('deliveryCharge').textContent = formatPrice(deliveryCharge);
     document.getElementById('totalCost').textContent = formatPrice(totalCost);
     document.getElementById('resellerTotal').textContent = formatPrice(resellerTotal);
+    document.getElementById('shortfallAmount').textContent = formatPrice(shortfall);
     document.getElementById('profitAmount').textContent = formatPrice(profit);
     document.getElementById('profitAmount').className = profit >= 0 ? 'profit-positive' : 'profit-negative';
 }

@@ -1,8 +1,11 @@
 <?php
 if (!isset($pdo)) {
     require_once __DIR__ . '/../../config/config.php';
-    requireAdmin();
 }
+requireAdmin();
+require_once __DIR__ . '/rbac.php';
+requireAdminPermissionForCurrentPage();
+$adminRole = adminCurrentRole();
 
 $siteTitle = getSettings('site_title') ?: 'কিলাগ্বো';
 $siteFavicon = getSettings('site_favicon');
@@ -520,13 +523,16 @@ $notifications = $notifStmt->fetchAll();
         
         <nav class="sidebar-nav">
             <ul class="nav flex-column">
+                <?php if (adminCan('dashboard.view')): ?>
                 <li class="nav-item">
                     <a href="<?php echo adminUrl('dashboard'); ?>" class="nav-link <?php echo ($currentPage ?? '') == 'dashboard' ? 'active' : ''; ?>">
                         <i class="bi bi-speedometer2"></i> ড্যাশবোর্ড
                     </a>
                 </li>
+                <?php endif; ?>
                 
-                <!-- Retail Section (includes Services & Digital Products) -->
+                <?php if (adminCan('retail.manage')): ?>
+<!-- Retail Section (includes Services & Digital Products) -->
                 <li class="nav-item">
                     <a href="#retailSubmenu" class="nav-link <?php echo in_array($currentPage ?? '', ['products', 'orders', 'categories', 'carousel', 'retail-delivery', 'services', 'service-orders', 'digital-products', 'digital-orders']) ? 'active' : ''; ?>" data-bs-toggle="collapse">
                         <i class="bi bi-cart3"></i> খুচরা বিক্রয়
@@ -611,7 +617,9 @@ $notifications = $notifStmt->fetchAll();
                     </ul>
                 </li>
                 
-                <!-- Wholesale Section -->
+                <?php endif; ?>
+                <?php if (adminCan('wholesale.manage')): ?>
+<!-- Wholesale Section -->
                 <li class="nav-item">
                     <a href="#wholesaleSubmenu" class="nav-link <?php echo in_array($currentPage ?? '', ['wholesale-products', 'wholesale-orders', 'wholesale-categories', 'wholesale-delivery']) ? 'active' : ''; ?>" data-bs-toggle="collapse">
                         <i class="bi bi-shop-window"></i> পাইকারি
@@ -646,7 +654,9 @@ $notifications = $notifStmt->fetchAll();
                     </ul>
                 </li>
                 
-                <!-- Reselling Section -->
+                <?php endif; ?>
+                <?php if (adminCan('resell.manage')): ?>
+<!-- Reselling Section -->
                 <li class="nav-item">
                     <a href="#resellingSubmenu" class="nav-link <?php echo in_array($currentPage ?? '', ['resell-products', 'resell-orders', 'resellers', 'resell-payments', 'resell-delivery']) ? 'active' : ''; ?>" data-bs-toggle="collapse">
                         <i class="bi bi-person-badge"></i> রিসেলিং
@@ -706,7 +716,9 @@ $notifications = $notifStmt->fetchAll();
                     </ul>
                 </li>
                 
-                <!-- Affiliate Section -->
+                <?php endif; ?>
+                <?php if (adminCan('affiliate.manage')): ?>
+<!-- Affiliate Section -->
                 <?php 
                 $affiliateNotifs = [];
                 try {
@@ -767,7 +779,9 @@ $notifications = $notifStmt->fetchAll();
                     </ul>
                 </li>
                 
-                <!-- Seller Section -->
+                <?php endif; ?>
+                <?php if (adminCan('seller.manage')): ?>
+<!-- Seller Section -->
                 <?php 
                 $sellerNotifs = [];
                 try {
@@ -815,36 +829,37 @@ $notifications = $notifStmt->fetchAll();
                     </ul>
                 </li>
                 
+<?php endif; ?>
+                                <?php if (adminCan('admin_users.manage') || adminCan('roles.manage')): ?>
                 <li class="nav-item">
-                    <a href="<?php echo adminUrl('courier'); ?>" class="nav-link <?php echo ($currentPage ?? '') == 'courier' ? 'active' : ''; ?>">
-                        <i class="bi bi-truck"></i> কুরিয়ার সেটআপ
+                    <a href="#adminAccessSubmenu" class="nav-link <?php echo in_array($currentPage ?? '', ['admin-users','roles']) ? 'active' : ''; ?>" data-bs-toggle="collapse">
+                        <i class="bi bi-shield-lock"></i> Admin Access
+                        <i class="bi bi-chevron-down ms-auto" style="font-size:0.7rem"></i>
                     </a>
+                    <ul class="collapse <?php echo in_array($currentPage ?? '', ['admin-users','roles']) ? 'show' : ''; ?>" id="adminAccessSubmenu" style="list-style:none;padding-left:30px">
+                        <?php if (adminCan('admin_users.manage')): ?><li class="nav-item"><a href="<?php echo adminUrl('admin-users.php'); ?>" class="nav-link <?php echo ($currentPage ?? '')==='admin-users'?'active':''; ?>" style="padding:8px 15px;font-size:.9rem"><i class="bi bi-person-gear"></i> Admin Users</a></li><?php endif; ?>
+                        <?php if (adminCan('roles.manage')): ?><li class="nav-item"><a href="<?php echo adminUrl('roles.php'); ?>" class="nav-link <?php echo ($currentPage ?? '')==='roles'?'active':''; ?>" style="padding:8px 15px;font-size:.9rem"><i class="bi bi-key"></i> Roles & Permissions</a></li><?php endif; ?>
+                    </ul>
                 </li>
-                <li class="nav-item">
-                    <a href="<?php echo adminUrl('pixel-gtm'); ?>" class="nav-link <?php echo ($currentPage ?? '') == 'pixel-gtm' ? 'active' : ''; ?>">
-                        <i class="bi bi-bar-chart"></i> পিক্সেল ও GTM
-                    </a>
-                </li>
-                <li class="nav-item">
-                    <a href="<?php echo adminUrl('payment-accounts'); ?>" class="nav-link <?php echo ($currentPage ?? '') == 'payment-accounts' ? 'active' : ''; ?>">
-                        <i class="bi bi-wallet2"></i> পেমেন্ট একাউন্ট
-                    </a>
-                </li>
-                <li class="nav-item">
-                    <a href="<?php echo adminUrl('social-login'); ?>" class="nav-link <?php echo ($currentPage ?? '') == 'social-login' ? 'active' : ''; ?>">
-                        <i class="bi bi-people"></i> সোশ্যাল লগইন
-                    </a>
-                </li>
-                <li class="nav-item">
-                    <a href="<?php echo adminUrl('contacts'); ?>" class="nav-link <?php echo ($currentPage ?? '') == 'contacts' ? 'active' : ''; ?>">
-                        <i class="bi bi-chat-dots"></i> যোগাযোগ
-                    </a>
-                </li>
-                <li class="nav-item">
-                    <a href="<?php echo adminUrl('settings'); ?>" class="nav-link <?php echo ($currentPage ?? '') == 'settings' ? 'active' : ''; ?>">
-                        <i class="bi bi-gear"></i> সেটিংস
-                    </a>
-                </li>
+                <?php endif; ?>
+
+                <?php if (adminCan('courier.manage')): ?>
+                <li class="nav-item"><a href="<?php echo adminUrl('courier'); ?>" class="nav-link <?php echo ($currentPage ?? '') == 'courier' ? 'active' : ''; ?>"><i class="bi bi-truck"></i> কুরিয়ার সেটআপ</a></li>
+                <?php endif; ?>
+
+                <?php if (adminCan('site.manage')): ?>
+                <li class="nav-item"><a href="<?php echo adminUrl('pixel-gtm'); ?>" class="nav-link <?php echo ($currentPage ?? '') == 'pixel-gtm' ? 'active' : ''; ?>"><i class="bi bi-bar-chart"></i> পিক্সেল ও GTM</a></li>
+                <li class="nav-item"><a href="<?php echo adminUrl('social-login'); ?>" class="nav-link <?php echo ($currentPage ?? '') == 'social-login' ? 'active' : ''; ?>"><i class="bi bi-people"></i> সোশ্যাল লগইন</a></li>
+                <li class="nav-item"><a href="<?php echo adminUrl('contacts'); ?>" class="nav-link <?php echo ($currentPage ?? '') == 'contacts' ? 'active' : ''; ?>"><i class="bi bi-chat-dots"></i> যোগাযোগ</a></li>
+                <?php endif; ?>
+
+                <?php if (adminCan('payments.manage')): ?>
+                <li class="nav-item"><a href="<?php echo adminUrl('payment-accounts'); ?>" class="nav-link <?php echo ($currentPage ?? '') == 'payment-accounts' ? 'active' : ''; ?>"><i class="bi bi-wallet2"></i> পেমেন্ট একাউন্ট</a></li>
+                <?php endif; ?>
+
+                <?php if (adminCan('settings.manage')): ?>
+                <li class="nav-item"><a href="<?php echo adminUrl('settings'); ?>" class="nav-link <?php echo ($currentPage ?? '') == 'settings' ? 'active' : ''; ?>"><i class="bi bi-gear"></i> সেটিংস</a></li>
+                <?php endif; ?>
             </ul>
         </nav>
     </aside>
@@ -913,7 +928,8 @@ $notifications = $notifStmt->fetchAll();
                         <span class="d-none d-md-inline"><?php echo sanitize($adminName); ?></span>
                     </a>
                     <ul class="dropdown-menu dropdown-menu-end">
-                        <li><a class="dropdown-item" href="<?php echo adminUrl('settings'); ?>"><i class="bi bi-person me-2"></i>প্রোফাইল</a></li>
+                        <?php if ($adminRole): ?><li><span class="dropdown-item-text small text-muted"><i class="bi bi-shield-check me-2"></i><?php echo sanitize($adminRole['name']); ?></span></li><?php endif; ?>
+                        <?php if (adminCan('settings.manage')): ?><li><a class="dropdown-item" href="<?php echo adminUrl('settings'); ?>"><i class="bi bi-person me-2"></i>প্রোফাইল / সেটিংস</a></li><?php endif; ?>
                         <li><hr class="dropdown-divider"></li>
                         <li><a class="dropdown-item text-danger" href="<?php echo adminUrl('logout'); ?>"><i class="bi bi-box-arrow-right me-2"></i>লগআউট</a></li>
                     </ul>

@@ -9,6 +9,8 @@ $currentPage = 'courier';
 
 require_once __DIR__ . '/../config/config.php';
 requireAdmin();
+require_once __DIR__ . '/includes/rbac.php';
+requireAdminPermissionForCurrentPage();
 
 $balanceResult = null;
 $balanceError = null;

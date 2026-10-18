@@ -6,9 +6,36 @@
 
 require_once __DIR__ . '/../config/config.php';
 requireAdmin();
+require_once __DIR__ . '/includes/rbac.php';
+requireAdminPermissionForCurrentPage();
+require_once __DIR__ . '/../includes/steadfast.php';
 
 $pageTitle = 'সেলার অর্ডার';
 $currentPage = 'seller-orders';
+
+// Seller Orders is an aggregate view. Courier actions are delegated to the underlying
+// retail/wholesale/resell order, so the same shipment is never duplicated in a new table.
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $action = $_POST['action'] ?? '';
+    $refs = steadfastRefsFromMixed($_POST['order_refs'] ?? []);
+
+    if ($action === 'bulk_send_steadfast') {
+        $result = steadfastSendOrders($pdo, $refs);
+        steadfastFlashSendResult($result);
+        redirect(adminUrl('seller-orders.php'));
+    }
+
+    if ($action === 'bulk_sync_steadfast') {
+        $result = steadfastSyncOrders($pdo, $refs, true);
+        steadfastFlashSyncResult($result);
+        redirect(adminUrl('seller-orders.php'));
+    }
+}
+
+steadfastAutoSyncRecent($pdo, 'retail', 10);
+steadfastAutoSyncRecent($pdo, 'wholesale', 10);
+steadfastAutoSyncRecent($pdo, 'resell', 10);
+
 
 // Handle search
 $search = $_GET['search'] ?? '';
@@ -41,7 +68,7 @@ $sqlParts = [];
 $allParams = [];
 
 // 1. Retail Orders
-$sqlParts[] = "SELECT 
+$sqlParts[] = "SELECT
     'retail' COLLATE utf8mb4_general_ci as type,
     oi.id as item_id,
     oi.order_id,
@@ -54,7 +81,10 @@ $sqlParts[] = "SELECT
     s.business_name COLLATE utf8mb4_general_ci as business_name,
     oi.quantity,
     oi.total as total_price,
-    o.status COLLATE utf8mb4_general_ci as order_status
+    o.status COLLATE utf8mb4_general_ci as order_status,
+    o.steadfast_consignment_id COLLATE utf8mb4_general_ci as steadfast_consignment_id,
+    o.steadfast_tracking_code COLLATE utf8mb4_general_ci as steadfast_tracking_code,
+    o.courier_status COLLATE utf8mb4_general_ci as courier_status
 FROM order_items oi
 JOIN products p ON oi.product_id = p.id
 JOIN sellers s ON p.seller_id = s.id
@@ -65,7 +95,7 @@ WHERE 1=1 $searchClause $sellerClause";
 $allParams = array_merge($allParams, $params);
 
 // 2. Wholesale Orders
-$sqlParts[] = "SELECT 
+$sqlParts[] = "SELECT
     'wholesale' COLLATE utf8mb4_general_ci as type,
     oi.id as item_id,
     oi.order_id,
@@ -78,7 +108,10 @@ $sqlParts[] = "SELECT
     s.business_name COLLATE utf8mb4_general_ci as business_name,
     oi.quantity,
     oi.total_price as total_price,
-    o.order_status COLLATE utf8mb4_general_ci as order_status
+    o.order_status COLLATE utf8mb4_general_ci as order_status,
+    o.steadfast_consignment_id COLLATE utf8mb4_general_ci as steadfast_consignment_id,
+    o.steadfast_tracking_code COLLATE utf8mb4_general_ci as steadfast_tracking_code,
+    o.courier_status COLLATE utf8mb4_general_ci as courier_status
 FROM wholesale_order_items oi
 JOIN wholesale_products p ON oi.wholesale_product_id = p.id
 JOIN sellers s ON p.seller_id = s.id
@@ -95,7 +128,7 @@ $allParams = array_merge($allParams, $params);
 // Let's wrap in try-catch in case table doesn't exist or column name mismatch
 $resellExists = true; // Assume exists based on header.php
 if ($resellExists) {
-    $sqlParts[] = "SELECT 
+    $sqlParts[] = "SELECT
         'resell' COLLATE utf8mb4_general_ci as type,
         oi.id as item_id,
         oi.order_id,
@@ -108,13 +141,16 @@ if ($resellExists) {
         s.business_name COLLATE utf8mb4_general_ci as business_name,
         oi.quantity,
         (oi.reseller_price * oi.quantity) as total_price,
-        o.status COLLATE utf8mb4_general_ci as order_status
+        o.status COLLATE utf8mb4_general_ci as order_status,
+        o.steadfast_consignment_id COLLATE utf8mb4_general_ci as steadfast_consignment_id,
+        o.steadfast_tracking_code COLLATE utf8mb4_general_ci as steadfast_tracking_code,
+        o.courier_status COLLATE utf8mb4_general_ci as courier_status
     FROM resell_order_items oi
     JOIN resell_products p ON oi.resell_product_id = p.id
     JOIN sellers s ON p.seller_id = s.id
     JOIN resell_orders o ON oi.order_id = o.id
     WHERE 1=1 $searchClause $sellerClause";
-    
+
     // Duplicate params for third query
     $allParams = array_merge($allParams, $params);
 }
@@ -162,7 +198,7 @@ require_once 'includes/header.php';
 <div class="admin-card">
     <div class="d-flex justify-content-between align-items-center mb-4">
         <h5 class="card-title mb-0">সেলার অর্ডার সমূহ</h5>
-        
+
         <form method="GET" class="d-flex gap-2">
             <?php if ($sellerId): ?>
             <input type="hidden" name="seller_id" value="<?php echo $sellerId; ?>">
@@ -174,6 +210,14 @@ require_once 'includes/header.php';
         </form>
     </div>
 
+    <?php if (steadfastIsReady() && !empty($orders)): ?>
+    <div id="sellerCourierBulk" class="d-flex align-items-center gap-2 flex-wrap mb-3" style="display:none !important;">
+        <span class="text-muted"><span id="sellerSelectedCount">0</span> টি অর্ডার সিলেক্ট</span>
+        <button type="button" class="btn btn-success btn-sm" onclick="submitSellerCourier('bulk_send_steadfast')"><i class="bi bi-send me-1"></i>কুরিয়ারে পাঠান</button>
+        <button type="button" class="btn btn-outline-primary btn-sm" onclick="submitSellerCourier('bulk_sync_steadfast')"><i class="bi bi-arrow-repeat me-1"></i>স্ট্যাটাস Sync</button>
+    </div>
+    <?php endif; ?>
+
     <?php if (empty($orders)): ?>
     <div class="text-center py-5 text-muted">
         <i class="bi bi-receipt display-4"></i>
@@ -184,6 +228,7 @@ require_once 'includes/header.php';
         <table class="table admin-table align-middle">
             <thead>
                 <tr>
+                    <th width="40"><input type="checkbox" class="form-check-input" id="sellerSelectAll"></th>
                     <th>অর্ডার নং</th>
                     <th>তারিখ</th>
                     <th>পণ্যের ছবি</th>
@@ -198,11 +243,12 @@ require_once 'includes/header.php';
             <tbody>
                 <?php foreach ($orders as $order): ?>
                 <tr>
+                    <td><input type="checkbox" class="form-check-input seller-order-checkbox" value="<?php echo $order['type'] . ':' . $order['order_id']; ?>"></td>
                     <td>
                         <span class="fw-bold">#<?php echo $order['order_number']; ?></span>
                         <br>
                         <small class="badge bg-light text-dark border">
-                            <?php 
+                            <?php
                                 if ($order['type'] == 'retail') echo 'খুচরা';
                                 elseif ($order['type'] == 'wholesale') echo 'পাইকারি';
                                 elseif ($order['type'] == 'resell') echo 'রিসেলিং';
@@ -232,7 +278,7 @@ require_once 'includes/header.php';
                     <td><?php echo $order['quantity']; ?></td>
                     <td>৳<?php echo number_format($order['total_price']); ?></td>
                     <td>
-                        <?php 
+                        <?php
                         $statusClass = 'bg-secondary';
                         if ($order['order_status'] == 'pending') $statusClass = 'bg-warning text-dark';
                         elseif ($order['order_status'] == 'processing') $statusClass = 'bg-info text-white';
@@ -241,6 +287,12 @@ require_once 'includes/header.php';
                         elseif ($order['order_status'] == 'cancelled') $statusClass = 'bg-danger';
                         ?>
                         <span class="badge <?php echo $statusClass; ?>"><?php echo ucfirst($order['order_status']); ?></span>
+                        <?php if (!empty($order['courier_status'])): ?>
+                        <br><span class="badge bg-light text-dark border mt-1"><i class="bi bi-truck me-1"></i><?php echo steadfastCourierStatusLabel($order['courier_status']); ?></span>
+                        <?php endif; ?>
+                        <?php if (!empty($order['steadfast_tracking_code'])): ?>
+                        <br><small class="text-muted"><?php echo sanitize($order['steadfast_tracking_code']); ?></small>
+                        <?php endif; ?>
                     </td>
                     <td>
                         <a href="<?php echo adminUrl('seller-view.php?id=' . $order['seller_id']); ?>" class="btn btn-sm btn-light border" title="সেলার বিস্তারিত">
@@ -270,5 +322,38 @@ require_once 'includes/header.php';
 
     <?php endif; ?>
 </div>
+
+
+<script>
+(function() {
+    const all = document.getElementById('sellerSelectAll');
+    const boxes = Array.from(document.querySelectorAll('.seller-order-checkbox'));
+    const bar = document.getElementById('sellerCourierBulk');
+    const countEl = document.getElementById('sellerSelectedCount');
+    function refresh() {
+        const checked = boxes.filter(cb => cb.checked);
+        if (countEl) countEl.textContent = checked.length;
+        if (bar) bar.style.setProperty('display', checked.length ? 'flex' : 'none', 'important');
+        if (all) {
+            all.checked = boxes.length > 0 && checked.length === boxes.length;
+            all.indeterminate = checked.length > 0 && checked.length < boxes.length;
+        }
+    }
+    all?.addEventListener('change', function() { boxes.forEach(cb => cb.checked = this.checked); refresh(); });
+    boxes.forEach(cb => cb.addEventListener('change', refresh));
+    window.submitSellerCourier = function(action) {
+        const checked = boxes.filter(cb => cb.checked);
+        if (!checked.length) return;
+        const verb = action === 'bulk_send_steadfast' ? 'Steadfast এ পাঠাতে' : 'courier status sync করতে';
+        if (!confirm(checked.length + ' টি selected row-এর underlying order ' + verb + ' চান?')) return;
+        const form = document.createElement('form');
+        form.method = 'POST'; form.style.display = 'none';
+        const a = document.createElement('input'); a.type = 'hidden'; a.name = 'action'; a.value = action; form.appendChild(a);
+        checked.forEach(cb => { const i = document.createElement('input'); i.type = 'hidden'; i.name = 'order_refs[]'; i.value = cb.value; form.appendChild(i); });
+        document.body.appendChild(form); form.submit();
+    };
+    refresh();
+})();
+</script>
 
 <?php require_once 'includes/footer.php'; ?>

@@ -18,6 +18,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $description = $_POST['description'] ?? '';
     $sellerPrice = floatval($_POST['seller_price'] ?? 0);
     $minimumQuantity = isset($_POST['minimum_quantity']) && $_POST['minimum_quantity'] !== '' ? intval($_POST['minimum_quantity']) : 0;
+
+    // Optional wholesale storefront proposal. This remains pending until Super Admin approval.
+    $wholesalePriceRaw = trim((string)($_POST['wholesale_price'] ?? ''));
+    $wholesalePrice = $wholesalePriceRaw !== '' ? floatval($wholesalePriceRaw) : null;
+    if ($wholesalePrice !== null && $wholesalePrice <= 0) {
+        $wholesalePrice = null;
+    }
+    $wholesaleMinQty = $wholesalePrice !== null
+        ? max(1, intval($_POST['wholesale_min_qty'] ?? 1))
+        : null;
+
     $stock = (isset($_POST['stock']) && $_POST['stock'] !== '') ? intval($_POST['stock']) : null;
     $categoryId = !empty($_POST['category_id']) ? intval($_POST['category_id']) : null;
     $videoUrl = sanitize($_POST['video_url'] ?? '');
@@ -73,10 +84,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     
     // Insert product
     $stmt = $pdo->prepare("
-        INSERT INTO seller_products (seller_id, name, slug, description, seller_price, minimum_quantity, stock, image, gallery, video_url, category_id, has_variations, status) 
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')
+        INSERT INTO seller_products (
+            seller_id, name, slug, description, seller_price, minimum_quantity,
+            wholesale_price, wholesale_min_qty, stock, image, gallery, video_url,
+            category_id, has_variations, status
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')
     ");
-    $stmt->execute([$seller['id'], $name, $slug, $description, $sellerPrice, $minimumQuantity, $stock, $image, $galleryJson, $videoUrl, $categoryId, $hasVariations]);
+    $stmt->execute([
+        $seller['id'], $name, $slug, $description, $sellerPrice, $minimumQuantity,
+        $wholesalePrice, $wholesaleMinQty, $stock, $image, $galleryJson, $videoUrl,
+        $categoryId, $hasVariations
+    ]);
     $productId = $pdo->lastInsertId();
     
     // Handle variations
@@ -244,6 +263,25 @@ require_once 'includes/header.php';
                         <input type="number" name="minimum_quantity" class="form-control" min="0" value="0" placeholder="সর্বনিম্ন পরিমাণ লিখুন">
                         <small class="text-muted">ঐচ্ছিক - ফাঁকা রাখলে বা ০ দিলে কোনো সীমা থাকবে না</small>
                     </div>
+                </div>
+
+                <div class="seller-card mb-3" style="background:#fffaf0; border:1px solid #fde68a;">
+                    <div class="d-flex align-items-center justify-content-between mb-2">
+                        <h6 class="mb-0"><i class="bi bi-box-seam me-2"></i>পাইকারি সেকশন (ঐচ্ছিক)</h6>
+                        <span class="badge bg-warning text-dark">অ্যাডমিন অনুমোদন লাগবে</span>
+                    </div>
+                    <p class="small text-muted mb-3">পণ্যটি পাইকারি সেকশনে দিতে চাইলে প্রস্তাবিত বিক্রয় মূল্য ও ন্যূনতম পরিমাণ দিন। ফাঁকা রাখলে পণ্যটি সাধারণ সেলার পণ্য হিসেবেই পেন্ডিং থাকবে।</p>
+                    <div class="row">
+                        <div class="col-md-6 mb-2">
+                            <label class="form-label">পাইকারি বিক্রয় মূল্য (৳)</label>
+                            <input type="number" name="wholesale_price" class="form-control" step="0.01" min="0" placeholder="যেমন: 450">
+                        </div>
+                        <div class="col-md-6 mb-2">
+                            <label class="form-label">পাইকারি ন্যূনতম অর্ডার</label>
+                            <input type="number" name="wholesale_min_qty" class="form-control" min="1" value="1">
+                        </div>
+                    </div>
+                    <small class="text-muted">সুপার অ্যাডমিন অনুমোদন/সেভ করার আগে এই মূল্য পাবলিক পাইকারি সেকশনে কার্যকর হবে না।</small>
                 </div>
                 
                 <div class="mb-3">

@@ -87,3 +87,19 @@ function getResellDeliveryCharge($chargeId = null) {
     $result = $stmt->fetch();
     return $result ? (float)$result['charge'] : 0;
 }
+
+
+// NOTE 05: reseller cart count. Returns 0 before the migration is installed.
+function getResellerCartCount($resellerId = null) {
+    global $pdo;
+    $resellerId = $resellerId ?: getResellerId();
+    if (!$resellerId) return 0;
+
+    try {
+        $stmt = $pdo->prepare("SELECT COALESCE(SUM(quantity), 0) FROM resell_cart WHERE reseller_id = ?");
+        $stmt->execute([$resellerId]);
+        return (int)$stmt->fetchColumn();
+    } catch (PDOException $e) {
+        return 0;
+    }
+}

@@ -17,6 +17,7 @@ $hasLowBalance = $correctBalance < $minBalance;
 
 // Get reseller notifications
 $resellerNotifs = getResellerNotifications($reseller['id']);
+$resellerCartCount = getResellerCartCount($reseller['id']);
 ?>
 <!DOCTYPE html>
 <html lang="bn">
@@ -247,6 +248,12 @@ $resellerNotifs = getResellerNotifications($reseller['id']);
                 <?php if ($resellerNotifs['products'] > 0): ?>
                 <span class="menu-badge"><?php echo $resellerNotifs['products']; ?></span>
                 <?php endif; ?>
+            </a>
+        </li>
+        <li>
+            <a href="<?php echo baseUrl('resell/cart.php'); ?>" class="<?php echo ($currentPage ?? '') === 'cart' ? 'active' : ''; ?>">
+                <i class="bi bi-cart3"></i> <span>কার্ট</span>
+                <span class="menu-badge" id="resellerCartCount" style="<?php echo $resellerCartCount > 0 ? '' : 'display:none;'; ?>"><?php echo $resellerCartCount; ?></span>
             </a>
         </li>
         <li>

@@ -9,97 +9,65 @@ $currentPage = 'wholesale-orders';
 
 require_once __DIR__ . '/../config/config.php';
 requireAdmin();
+require_once __DIR__ . '/includes/rbac.php';
+requireAdminPermissionForCurrentPage();
+require_once __DIR__ . '/../includes/steadfast.php';
 
 // Handle status update
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = $_POST['action'] ?? '';
-    
+
     if ($action === 'update_status') {
         $orderId = (int)$_POST['order_id'];
         $status = sanitize($_POST['status']);
-        
+
         $pdo->prepare("UPDATE wholesale_orders SET order_status = ? WHERE id = ?")
             ->execute([$status, $orderId]);
-        
+
         setFlash('success', 'অর্ডার স্ট্যাটাস আপডেট হয়েছে');
         redirect(adminUrl('wholesale-orders'));
     }
-    
-    if ($action === 'send_to_steadfast') {
-        $orderId = (int)$_POST['order_id'];
-        
-        // Get order details
-        $orderStmt = $pdo->prepare("SELECT * FROM wholesale_orders WHERE id = ?");
-        $orderStmt->execute([$orderId]);
-        $order = $orderStmt->fetch();
-        
-        if ($order) {
-            $apiKey = getSettings('steadfast_api_key');
-            $secretKey = getSettings('steadfast_secret_key');
-            $isActive = getSettings('steadfast_active');
-            
-            if ($isActive && $apiKey && $secretKey) {
-                // Prepare data for Steadfast
-                $data = [
-                    'invoice' => $order['order_number'],
-                    'recipient_name' => $order['customer_name'],
-                    'recipient_phone' => $order['customer_phone'],
-                    'recipient_address' => $order['shipping_address'] ?? $order['customer_address'] ?? '',
-                    'cod_amount' => $order['total'],
-                    'note' => $order['notes'] ?? ''
-                ];
-                
-                $ch = curl_init();
-                curl_setopt($ch, CURLOPT_URL, STEADFAST_BASE_URL . '/create_order');
-                curl_setopt($ch, CURLOPT_POST, true);
-                curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($data));
-                curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-                curl_setopt($ch, CURLOPT_HTTPHEADER, [
-                    'Content-Type: application/json',
-                    'Api-Key: ' . $apiKey,
-                    'Secret-Key: ' . $secretKey
-                ]);
-                
-                $response = curl_exec($ch);
-                $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-                curl_close($ch);
-                
-                $result = json_decode($response, true);
-                
-                if ($httpCode == 200 && isset($result['consignment']['consignment_id'])) {
-                    $consignmentId = $result['consignment']['consignment_id'];
-                    $trackingCode = $result['consignment']['tracking_code'] ?? '';
-                    
-                    $pdo->prepare("UPDATE wholesale_orders SET steadfast_consignment_id = ?, steadfast_tracking_code = ?, order_status = 'processing' WHERE id = ?")
-                        ->execute([$consignmentId, $trackingCode, $orderId]);
-                    
-                    setFlash('success', 'অর্ডার সফলভাবে Steadfast এ পাঠানো হয়েছে');
-                } else {
-                    setFlash('error', 'Steadfast এ পাঠাতে সমস্যা হয়েছে: ' . ($result['message'] ?? 'Unknown error'));
-                }
-            } else {
-                setFlash('error', 'Steadfast কুরিয়ার সেটআপ করা হয়নি বা সক্রিয় নেই');
-            }
-        }
+
+    if ($action === 'bulk_send_steadfast') {
+        $ids = array_map('intval', $_POST['ids'] ?? []);
+        $result = steadfastSendOrders($pdo, steadfastRefsFromIds('wholesale', $ids));
+        steadfastFlashSendResult($result);
         redirect(adminUrl('wholesale-orders'));
     }
-    
+
+    if ($action === 'bulk_sync_steadfast') {
+        $ids = array_map('intval', $_POST['ids'] ?? []);
+        $result = steadfastSyncOrders($pdo, steadfastRefsFromIds('wholesale', $ids), true);
+        steadfastFlashSyncResult($result);
+        redirect(adminUrl('wholesale-orders'));
+    }
+
+    if ($action === 'send_to_steadfast') {
+        $orderId = (int)$_POST['order_id'];
+        $result = steadfastSendOrders($pdo, [['type' => 'wholesale', 'id' => $orderId]], true);
+        steadfastFlashSendResult($result);
+        redirect(adminUrl('wholesale-orders'));
+    }
+
     if ($action === 'bulk_delete') {
         $ids = $_POST['ids'] ?? [];
         if (!empty($ids)) {
             $placeholders = implode(',', array_fill(0, count($ids), '?'));
-            
+
             // Delete order items first
             $pdo->prepare("DELETE FROM wholesale_order_items WHERE order_id IN ($placeholders)")->execute($ids);
-            
+
             // Delete orders
             $pdo->prepare("DELETE FROM wholesale_orders WHERE id IN ($placeholders)")->execute($ids);
-            
+
             setFlash('success', count($ids) . ' টি অর্ডার মুছে ফেলা হয়েছে');
         }
         redirect(adminUrl('wholesale-orders'));
     }
 }
+
+// Refresh recent courier statuses on page load (2-minute per-order throttle).
+steadfastAutoSyncRecent($pdo, 'wholesale', 20);
 
 // Pagination
 $page = max(1, (int)($_GET['page'] ?? 1));
@@ -133,9 +101,9 @@ $totalPages = ceil($totalOrders / $perPage);
 
 // Get orders
 $stmt = $pdo->prepare("
-    SELECT * FROM wholesale_orders 
-    $where 
-    ORDER BY created_at DESC 
+    SELECT * FROM wholesale_orders
+    $where
+    ORDER BY created_at DESC
     LIMIT $perPage OFFSET $offset
 ");
 $stmt->execute($params);
@@ -184,9 +152,19 @@ require_once 'includes/header.php';
         <div>
             <span id="selectedCount">0</span> টি অর্ডার সিলেক্ট করা হয়েছে
         </div>
-        <button type="button" class="btn btn-danger btn-sm" onclick="bulkDelete()">
-            <i class="bi bi-trash me-2"></i>নির্বাচিত গুলো মুছুন
-        </button>
+        <div class="d-flex gap-2 flex-wrap">
+            <?php if (steadfastIsReady()): ?>
+            <button type="button" class="btn btn-success btn-sm" onclick="submitBulkCourier('bulk_send_steadfast')">
+                <i class="bi bi-send me-1"></i>কুরিয়ারে পাঠান
+            </button>
+            <button type="button" class="btn btn-outline-primary btn-sm" onclick="submitBulkCourier('bulk_sync_steadfast')">
+                <i class="bi bi-arrow-repeat me-1"></i>স্ট্যাটাস Sync
+            </button>
+            <?php endif; ?>
+            <button type="button" class="btn btn-danger btn-sm" onclick="bulkDelete()">
+                <i class="bi bi-trash me-2"></i>নির্বাচিত গুলো মুছুন
+            </button>
+        </div>
     </div>
 </div>
 
@@ -226,15 +204,21 @@ require_once 'includes/header.php';
                         <span class="badge bg-<?php echo $statusLabels[$order['order_status']]['class']; ?>">
                             <?php echo $statusLabels[$order['order_status']]['label']; ?>
                         </span>
+                        <?php if (!empty($order['courier_status'])): ?>
+                        <br><span class="badge bg-light text-dark border mt-1"><i class="bi bi-truck me-1"></i><?php echo steadfastCourierStatusLabel($order['courier_status']); ?></span>
+                        <?php endif; ?>
+                        <?php if (!empty($order['steadfast_tracking_code'])): ?>
+                        <br><small class="text-muted"><?php echo sanitize($order['steadfast_tracking_code']); ?></small>
+                        <?php endif; ?>
                     </td>
                     <td><?php echo date('d M Y', strtotime($order['created_at'])); ?></td>
                     <td>
                         <a href="<?php echo adminUrl('wholesale-order-view/' . $order['id']); ?>" class="btn btn-sm btn-outline-primary" title="বিস্তারিত দেখুন">
                             <i class="bi bi-eye"></i>
                         </a>
-                        <?php 
+                        <?php
                         $steadfastActive = getSettings('steadfast_active') == 1 && getSettings('steadfast_api_key');
-                        if ($steadfastActive && $order['order_status'] != 'cancelled'): 
+                        if ($steadfastActive && $order['order_status'] != 'cancelled'):
                         ?>
                         <form method="POST" class="d-inline" action="<?php echo adminUrl('wholesale-orders'); ?>">
                             <input type="hidden" name="action" value="send_to_steadfast">
@@ -257,7 +241,7 @@ require_once 'includes/header.php';
             </tbody>
         </table>
     </div>
-    
+
     <!-- Pagination -->
     <?php if ($totalPages > 1): ?>
     <nav class="mt-3">
@@ -285,7 +269,7 @@ function updateBulkBtn() {
     const checkedCount = document.querySelectorAll('.item-checkbox:checked').length;
     const bulkActions = document.getElementById('bulkActions');
     const selectedCount = document.getElementById('selectedCount');
-    
+
     if (checkedCount > 0) {
         bulkActions.style.display = 'block';
         selectedCount.textContent = checkedCount;
@@ -295,11 +279,27 @@ function updateBulkBtn() {
     }
 }
 
+function submitBulkCourier(action) {
+    const checked = document.querySelectorAll('.item-checkbox:checked');
+    if (checked.length === 0) return;
+    const verb = action === 'bulk_send_steadfast' ? 'Steadfast এ পাঠাতে' : 'courier status sync করতে';
+    if (!confirm(checked.length + ' টি অর্ডার ' + verb + ' চান?')) return;
+    const container = document.getElementById('bulkCourierIds');
+    container.innerHTML = '';
+    checked.forEach(cb => {
+        const input = document.createElement('input');
+        input.type = 'hidden'; input.name = 'ids[]'; input.value = cb.value;
+        container.appendChild(input);
+    });
+    document.getElementById('bulkCourierAction').value = action;
+    document.getElementById('bulkCourierForm').submit();
+}
+
 function bulkDelete() {
     const checked = document.querySelectorAll('.item-checkbox:checked');
     const count = checked.length;
     if (count === 0) return;
-    
+
     if (confirm('আপনি কি নিশ্চিত যে আপনি নির্বাচিত ' + count + ' টি অর্ডার মুছে ফেলতে চান? এটি অর্ডার আইটেমগুলিকেও মুছে ফেলবে।')) {
         const idsContainer = document.getElementById('bulkDeleteIds');
         idsContainer.innerHTML = '';
@@ -319,6 +319,10 @@ function bulkDelete() {
 <form id="bulkDeleteForm" method="POST" style="display:none;">
     <input type="hidden" name="action" value="bulk_delete">
     <div id="bulkDeleteIds"></div>
+</form>
+<form id="bulkCourierForm" method="POST" style="display:none;">
+    <input type="hidden" name="action" id="bulkCourierAction" value="">
+    <div id="bulkCourierIds"></div>
 </form>
 
 <?php require_once 'includes/footer.php'; ?>

@@ -123,6 +123,42 @@ include 'includes/header.php';
         position: sticky;
         top: 100px;
     }
+
+    .gallery-stage {
+        position: relative;
+        touch-action: pan-y;
+    }
+
+    .gallery-stage:focus {
+        outline: none;
+    }
+
+    .gallery-nav {
+        position: absolute;
+        top: 50%;
+        transform: translateY(-50%);
+        width: 44px;
+        height: 44px;
+        border-radius: 50%;
+        border: 1px solid rgba(0, 0, 0, 0.12);
+        background: rgba(255, 255, 255, 0.92);
+        color: #333;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: 5;
+        box-shadow: 0 4px 14px rgba(0, 0, 0, 0.12);
+        transition: all 0.2s ease;
+    }
+
+    .gallery-nav:hover {
+        background: #fff;
+        color: #ff6600;
+        transform: translateY(-50%) scale(1.05);
+    }
+
+    .gallery-nav.prev { left: 12px; }
+    .gallery-nav.next { right: 12px; }
     
     .main-image-container {
         width: 100%;
@@ -527,6 +563,13 @@ include 'includes/header.php';
     }
 
     @media (max-width: 768px) {
+        .gallery-nav {
+            width: 38px;
+            height: 38px;
+        }
+        .gallery-nav.prev { left: 8px; }
+        .gallery-nav.next { right: 8px; }
+
         .product-price-box {
             padding: 10px;
             margin-bottom: 15px;
@@ -568,27 +611,37 @@ include 'includes/header.php';
             <!-- Product Gallery -->
             <div class="col-lg-6">
                 <div class="product-gallery">
-                    <div class="main-image-container" id="mainImageContainer">
-                        <?php if ($videoId && count($mediaItems) > 0 && $mediaItems[0]['type'] === 'video'): ?>
-                        <div class="video-container" id="videoContainer">
-                            <img src="<?php echo $mediaItems[0]['thumb']; ?>" alt="Video Thumbnail" id="videoThumb">
-                            <div class="video-overlay" onclick="playVideo()">
-                                <i class="bi bi-play-circle-fill"></i>
+                    <div class="gallery-stage" id="retailGalleryStage" tabindex="0" aria-label="পণ্যের গ্যালারি">
+                        <div class="main-image-container" id="mainImageContainer">
+                            <?php if ($videoId && count($mediaItems) > 0 && $mediaItems[0]['type'] === 'video'): ?>
+                            <div class="video-container" id="videoContainer">
+                                <img src="<?php echo $mediaItems[0]['thumb']; ?>" alt="Video Thumbnail" id="videoThumb">
+                                <div class="video-overlay" onclick="playVideo()">
+                                    <i class="bi bi-play-circle-fill"></i>
+                                </div>
                             </div>
+                            <?php else: ?>
+                            <img src="<?php echo $product['image']; ?>" alt="<?php echo sanitize($product['name']); ?>" id="mainImg" data-zoom-image="<?php echo $product['image']; ?>">
+                            <?php endif; ?>
                         </div>
-                        <?php else: ?>
-                        <img src="<?php echo $product['image']; ?>" alt="<?php echo sanitize($product['name']); ?>" id="mainImg" data-zoom-image="<?php echo $product['image']; ?>">
+                        <?php if (count($mediaItems) > 1): ?>
+                        <button type="button" class="gallery-nav prev" onclick="galleryPrev()" aria-label="আগের ছবি">
+                            <i class="bi bi-chevron-left"></i>
+                        </button>
+                        <button type="button" class="gallery-nav next" onclick="galleryNext()" aria-label="পরের ছবি">
+                            <i class="bi bi-chevron-right"></i>
+                        </button>
                         <?php endif; ?>
                     </div>
                     
                     <div class="thumbnail-list">
                         <?php foreach ($mediaItems as $index => $item): ?>
                         <?php if ($item['type'] === 'video'): ?>
-                        <div class="thumbnail-item video <?php echo $index == 0 ? 'active' : ''; ?>" onclick="showVideo(this)" data-video-id="<?php echo $item['id']; ?>">
+                        <div class="thumbnail-item video <?php echo $index == 0 ? 'active' : ''; ?>" onclick="showVideo(this)" data-media-index="<?php echo $index; ?>" data-media-type="video" data-video-id="<?php echo $item['id']; ?>">
                             <img src="<?php echo $item['thumb']; ?>" alt="Video">
                         </div>
                         <?php else: ?>
-                        <div class="thumbnail-item <?php echo $index == 0 && !$videoId ? 'active' : ''; ?>" onclick="changeImage('<?php echo $item['src']; ?>', this)">
+                        <div class="thumbnail-item <?php echo $index == 0 && !$videoId ? 'active' : ''; ?>" onclick="changeImage('<?php echo $item['src']; ?>', this)" data-media-index="<?php echo $index; ?>" data-media-type="image" data-src="<?php echo $item['src']; ?>">
                             <img src="<?php echo $item['src']; ?>" alt="">
                         </div>
                         <?php endif; ?>
@@ -743,9 +796,17 @@ include 'includes/header.php';
 document.addEventListener('DOMContentLoaded', function() {
     // Image Zoom
     initElevateZoom();
+    initGalleryNavigation();
 });
 
 let isVideoPlaying = false;
+let currentGalleryIndex = 0;
+
+function syncGalleryIndex(el) {
+    if (!el) return;
+    const index = parseInt(el.dataset.mediaIndex, 10);
+    if (!Number.isNaN(index)) currentGalleryIndex = index;
+}
 
 function changeImage(src, el) {
     const container = document.getElementById('mainImageContainer');
@@ -753,6 +814,7 @@ function changeImage(src, el) {
     container.innerHTML = '<img src="' + src + '" alt="" id="mainImg" data-zoom-image="' + src + '">';
     document.querySelectorAll('.thumbnail-item').forEach(item => item.classList.remove('active'));
     el.classList.add('active');
+    syncGalleryIndex(el);
     isVideoPlaying = false;
     initElevateZoom();
 }
@@ -763,6 +825,7 @@ function showVideo(el) {
     container.innerHTML = '<div class="video-container"><img src="https://img.youtube.com/vi/' + videoId + '/0.jpg" alt="Video Thumbnail" id="videoThumb"><div class="video-overlay" onclick="playVideo()"><i class="bi bi-play-circle-fill"></i></div></div>';
     document.querySelectorAll('.thumbnail-item').forEach(item => item.classList.remove('active'));
     el.classList.add('active');
+    syncGalleryIndex(el);
     isVideoPlaying = false;
     if (typeof $ !== 'undefined' && $.fn.elevateZoom) {
         $('.zoomContainer').remove();
@@ -777,6 +840,64 @@ function playVideo() {
     const videoId = container.dataset.videoId || '<?php echo $videoId; ?>';
     container.innerHTML = '<iframe src="https://www.youtube.com/embed/' + videoId + '?autoplay=1&enablejsapi=1" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>';
     isVideoPlaying = true;
+}
+
+function galleryGoTo(index) {
+    const items = Array.from(document.querySelectorAll('.thumbnail-item[data-media-index]'));
+    if (items.length < 2) return;
+
+    const normalizedIndex = (index + items.length) % items.length;
+    const item = items[normalizedIndex];
+    if (!item) return;
+
+    if (item.dataset.mediaType === 'video') {
+        showVideo(item);
+    } else {
+        changeImage(item.dataset.src || item.querySelector('img')?.src || '', item);
+    }
+    item.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
+}
+
+function galleryPrev() {
+    galleryGoTo(currentGalleryIndex - 1);
+}
+
+function galleryNext() {
+    galleryGoTo(currentGalleryIndex + 1);
+}
+
+function initGalleryNavigation() {
+    const stage = document.getElementById('retailGalleryStage');
+    const activeItem = document.querySelector('.thumbnail-item.active[data-media-index]');
+    syncGalleryIndex(activeItem);
+    if (!stage) return;
+
+    let touchStartX = 0;
+    let touchStartY = 0;
+
+    stage.addEventListener('touchstart', function(event) {
+        const touch = event.changedTouches[0];
+        touchStartX = touch.clientX;
+        touchStartY = touch.clientY;
+    }, { passive: true });
+
+    stage.addEventListener('touchend', function(event) {
+        const touch = event.changedTouches[0];
+        const deltaX = touch.clientX - touchStartX;
+        const deltaY = touch.clientY - touchStartY;
+        if (Math.abs(deltaX) < 45 || Math.abs(deltaX) <= Math.abs(deltaY)) return;
+        deltaX < 0 ? galleryNext() : galleryPrev();
+    }, { passive: true });
+
+    stage.addEventListener('keydown', function(event) {
+        if (event.key === 'ArrowLeft') {
+            event.preventDefault();
+            galleryPrev();
+        } else if (event.key === 'ArrowRight') {
+            event.preventDefault();
+            galleryNext();
+        }
+    });
 }
 
 function changeQuantity(delta) {

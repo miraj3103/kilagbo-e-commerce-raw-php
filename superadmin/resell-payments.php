@@ -13,20 +13,20 @@ $pageTitle = 'রিসেল পেমেন্ট';
 if (isset($_POST['complete'])) {
     $withdrawalId = intval($_POST['withdrawal_id']);
     $transactionId = sanitize($_POST['transaction_id'] ?? '');
-    
+
     // Get withdrawal info
     $stmt = $pdo->prepare("SELECT * FROM reseller_withdrawals WHERE id = ?");
     $stmt->execute([$withdrawalId]);
     $withdrawal = $stmt->fetch();
-    
+
     if ($withdrawal && $withdrawal['status'] !== 'completed') {
         // Update withdrawal
         $pdo->prepare("UPDATE reseller_withdrawals SET status = 'completed', transaction_id = ?, processed_at = NOW(), updated_at = NOW() WHERE id = ?")
             ->execute([$transactionId, $withdrawalId]);
-        
+
         // Deduct balance
         deductResellerBalance($withdrawal['reseller_id'], $withdrawal['amount'], 'উইথড্র সম্পন্ন - ' . strtoupper($withdrawal['method_type']), 'withdrawal', $withdrawalId);
-        
+
         setFlash('success', 'পেমেন্ট সম্পন্ন হয়েছে');
     }
     redirect(adminUrl('resell-payments.php'));
@@ -36,10 +36,10 @@ if (isset($_POST['complete'])) {
 if (isset($_POST['reject_withdrawal'])) {
     $withdrawalId = intval($_POST['withdrawal_id']);
     $notes = sanitize($_POST['admin_notes'] ?? '');
-    
+
     $pdo->prepare("UPDATE reseller_withdrawals SET status = 'rejected', admin_notes = ?, processed_at = NOW(), updated_at = NOW() WHERE id = ?")
         ->execute([$notes, $withdrawalId]);
-    
+
     setFlash('success', 'উইথড্র রিকোয়েস্ট প্রত্যাখ্যান হয়েছে');
     redirect(adminUrl('resell-payments.php'));
 }
@@ -48,10 +48,10 @@ if (isset($_POST['reject_withdrawal'])) {
 if (isset($_POST['update_resell_settings'])) {
     $minBalance = floatval($_POST['resell_min_balance'] ?? 0);
     $minWithdraw = floatval($_POST['resell_min_withdrawal'] ?? 0);
-    
+
     updateSetting('resell_min_balance', $minBalance);
     updateSetting('reselling_min_withdrawal', $minWithdraw);
-    
+
     setFlash('success', 'রিসেল সেটিংস আপডেট করা হয়েছে');
     redirect(adminUrl('resell-payments.php'));
 }
@@ -72,17 +72,17 @@ if ($status) {
 }
 
 $stmt = $pdo->prepare("
-    SELECT rw.*, r.name as reseller_name, r.email as reseller_email, r.phone as reseller_phone 
-    FROM reseller_withdrawals rw 
-    LEFT JOIN resellers r ON rw.reseller_id = r.id 
-    $where 
+    SELECT rw.*, r.name as reseller_name, r.email as reseller_email, r.phone as reseller_phone
+    FROM reseller_withdrawals rw
+    LEFT JOIN resellers r ON rw.reseller_id = r.id
+    $where
     ORDER BY rw.created_at DESC
 ");
 $stmt->execute($params);
 $withdrawals = $stmt->fetchAll();
 
 // Stats
-$stats = $pdo->query("SELECT 
+$stats = $pdo->query("SELECT
     SUM(CASE WHEN status = 'pending' THEN amount ELSE 0 END) as pending_amount,
     SUM(CASE WHEN status = 'completed' THEN amount ELSE 0 END) as completed_amount,
     COUNT(CASE WHEN status = 'pending' THEN 1 END) as pending_count
@@ -93,8 +93,8 @@ $stats = $pdo->query("SELECT
     <div class="d-flex justify-content-between align-items-center mb-4">
         <h4><i class="bi bi-cash-stack me-2"></i>রিসেল পেমেন্ট</h4>
     </div>
-    
-    
+
+
     <?php showFlash(); ?>
 
     <!-- Settings Section -->
@@ -128,7 +128,7 @@ $stats = $pdo->query("SELECT
             </form>
         </div>
     </div>
-    
+
     <div class="row g-3 mb-4">
         <div class="col-md-4">
             <div class="card bg-warning">
@@ -147,7 +147,7 @@ $stats = $pdo->query("SELECT
             </div>
         </div>
     </div>
-    
+
     <div class="card">
         <div class="card-header">
             <form method="GET" class="row g-3">
@@ -194,9 +194,18 @@ $stats = $pdo->query("SELECT
                                 <span class="badge bg-secondary"><?php echo strtoupper($w['method_type']); ?></span>
                             </td>
                             <td>
-                                <?php echo $w['account_number']; ?>
-                                <?php if ($w['account_name']): ?>
-                                <br><small class="text-muted"><?php echo $w['account_name']; ?></small>
+                                <?php if ($w['method_type'] === 'bank'): ?>
+                                    <strong><?php echo sanitize($w['bank_name'] ?: 'N/A'); ?></strong><br>
+                                    <span><?php echo sanitize($w['account_number']); ?></span>
+                                    <?php if ($w['account_name']): ?>
+                                    <br><small class="text-muted">হোল্ডার: <?php echo sanitize($w['account_name']); ?></small>
+                                    <?php endif; ?>
+                                    <br><small class="text-muted"><?php echo sanitize($w['bank_district'] ?: 'N/A'); ?> · <?php echo sanitize($w['bank_branch'] ?: 'N/A'); ?></small>
+                                <?php else: ?>
+                                    <?php echo sanitize($w['account_number']); ?>
+                                    <?php if ($w['account_name']): ?>
+                                    <br><small class="text-muted"><?php echo sanitize($w['account_name']); ?></small>
+                                    <?php endif; ?>
                                 <?php endif; ?>
                             </td>
                             <td>
@@ -225,7 +234,7 @@ $stats = $pdo->query("SELECT
                                 <button type="button" class="btn btn-sm btn-danger" data-bs-toggle="modal" data-bs-target="#rejectModal<?php echo $w['id']; ?>">
                                     <i class="bi bi-x-lg"></i>
                                 </button>
-                                
+
                                 <!-- Complete Modal -->
                                 <div class="modal fade" id="completeModal<?php echo $w['id']; ?>" tabindex="-1">
                                     <div class="modal-dialog">
@@ -237,13 +246,21 @@ $stats = $pdo->query("SELECT
                                                 </div>
                                                 <div class="modal-body">
                                                     <input type="hidden" name="withdrawal_id" value="<?php echo $w['id']; ?>">
-                                                    
+
                                                     <div class="alert alert-info">
                                                         <strong>পরিমাণ:</strong> <?php echo formatPrice($w['amount']); ?><br>
                                                         <strong>মেথড:</strong> <?php echo strtoupper($w['method_type']); ?><br>
-                                                        <strong>অ্যাকাউন্ট:</strong> <?php echo $w['account_number']; ?>
+                                                        <?php if ($w['method_type'] === 'bank'): ?>
+                                                            <strong>ব্যাংক:</strong> <?php echo sanitize($w['bank_name'] ?: 'N/A'); ?><br>
+                                                            <strong>অ্যাকাউন্ট হোল্ডার:</strong> <?php echo sanitize($w['account_name'] ?: 'N/A'); ?><br>
+                                                            <strong>অ্যাকাউন্ট নম্বর:</strong> <?php echo sanitize($w['account_number']); ?><br>
+                                                            <strong>জেলা:</strong> <?php echo sanitize($w['bank_district'] ?: 'N/A'); ?><br>
+                                                            <strong>শাখা:</strong> <?php echo sanitize($w['bank_branch'] ?: 'N/A'); ?>
+                                                        <?php else: ?>
+                                                            <strong>অ্যাকাউন্ট:</strong> <?php echo sanitize($w['account_number']); ?>
+                                                        <?php endif; ?>
                                                     </div>
-                                                    
+
                                                     <div class="mb-3">
                                                         <label class="form-label">ট্রান্সাকশন আইডি</label>
                                                         <input type="text" class="form-control" name="transaction_id" placeholder="ঐচ্ছিক">
@@ -257,7 +274,7 @@ $stats = $pdo->query("SELECT
                                         </div>
                                     </div>
                                 </div>
-                                
+
                                 <!-- Reject Modal -->
                                 <div class="modal fade" id="rejectModal<?php echo $w['id']; ?>" tabindex="-1">
                                     <div class="modal-dialog">

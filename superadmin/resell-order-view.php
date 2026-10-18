@@ -6,6 +6,7 @@
 
 $currentPage = 'resell-orders';
 require_once 'includes/header.php';
+require_once __DIR__ . '/../includes/resell-shortfall.php';
 
 $pageTitle = 'রিসেল অর্ডার বিবরণ';
 
@@ -40,58 +41,124 @@ $stmt = $pdo->prepare("
 $stmt->execute([$orderId]);
 $orderItems = $stmt->fetchAll();
 
+// Delivery options used by the existing reseller delivery-charge system.
+$deliveryOptions = getResellDeliveryCharges();
+
+function resellOrderShippingAreaLabel($area) {
+    if ($area === 'inside_dhaka') return 'ঢাকার ভিতরে';
+    if ($area === 'outside_dhaka') return 'ঢাকার বাইরে';
+    if ($area === 'custom') return 'কাস্টম ডেলিভারি চার্জ';
+    return $area ?: 'নির্ধারিত নয়';
+}
+
 // Handle status update
 if (isset($_POST['update_status'])) {
     $newStatus = sanitize($_POST['status']);
-    $oldStatus = $order['status'];
 
-    // Update the status
-    $pdo->prepare("UPDATE resell_orders SET status = ?, updated_at = NOW() WHERE id = ?")->execute([$newStatus, $orderId]);
+    try {
+        resellApplyOrderStatusFinancials($pdo, $orderId, $newStatus);
+        setFlash('success', 'অর্ডার স্ট্যাটাস আপডেট হয়েছে');
+    } catch (Throwable $e) {
+        setFlash('error', $e->getMessage());
+    }
 
-        // Handle profit crediting/deducting based on status changes
-        if ($newStatus === 'delivered' && !$order['profit_credited']) {
-            // Status changed to delivered and profit not yet credited - add profit
-            addResellerBalance($order['reseller_id'], $order['profit'], "অর্ডার #" . $order['order_number'] . " থেকে প্রফিট", 'order', $orderId);
-            $pdo->prepare("UPDATE resell_orders SET profit_credited = 1, delivered_at = NOW() WHERE id = ?")->execute([$orderId]);
-        } elseif ($newStatus !== 'delivered' && $order['profit_credited']) {
-            // Status changed to non-delivered and profit was previously credited - deduct profit
-            deductResellerBalance($order['reseller_id'], $order['profit'], "অর্ডার #" . $order['order_number'] . " স্ট্যাটাস পরিবর্তন - প্রফিট ফেরত", 'order', $orderId);
-            $pdo->prepare("UPDATE resell_orders SET profit_credited = 0, delivered_at = NULL WHERE id = ?")->execute([$orderId]);
-        }
-
-        // --- Handle Delivery Charge Deduction for Return ---
-        // We use a flag 'is_return_deducted' to prevent double deduction if status toggles
-        try {
-            $pdo->query("SELECT is_return_deducted FROM resell_orders LIMIT 1");
-        } catch (PDOException $e) {
-            $pdo->exec("ALTER TABLE resell_orders ADD COLUMN is_return_deducted TINYINT(1) DEFAULT 0");
-        }
-
-        if ($newStatus === 'return' && !$order['is_return_deducted']) {
-            // Deduct delivery charge from reseller
-            deductResellerBalance($order['reseller_id'], $order['delivery_charge'], "অর্ডার #" . $order['order_number'] . " রিটার্ন - ডেলিভারি চার্জ কর্তন", 'order', $orderId);
-            $pdo->prepare("UPDATE resell_orders SET is_return_deducted = 1 WHERE id = ?")->execute([$orderId]);
-        } elseif ($newStatus !== 'return' && $order['is_return_deducted']) {
-            // If it was returned but now changed back to something else, we should ideally refund the charge
-            addResellerBalance($order['reseller_id'], $order['delivery_charge'], "অর্ডার #" . $order['order_number'] . " স্ট্যাটাস পরিবর্তন - ডেলিভারি চার্জ রিফান্ড", 'order', $orderId);
-            $pdo->prepare("UPDATE resell_orders SET is_return_deducted = 0 WHERE id = ?")->execute([$orderId]);
-        }
-
-    setFlash('success', 'অর্ডার স্ট্যাটাস আপডেট হয়েছে');
     redirect(adminUrl('resell-order-view/' . $orderId));
 }
 
-// Handle customer details update
+// Handle customer + shipping charge update
 if (isset($_POST['update_customer'])) {
-    $custName = sanitize($_POST['customer_name']);
-    $custPhone = sanitize($_POST['customer_phone']);
-    $custAddress = sanitize($_POST['shipping_address']);
-    $custArea = sanitize($_POST['shipping_area']);
-    
-    $pdo->prepare("UPDATE resell_orders SET customer_name = ?, customer_phone = ?, shipping_address = ?, shipping_area = ?, updated_at = NOW() WHERE id = ?")
-        ->execute([$custName, $custPhone, $custAddress, $custArea, $orderId]);
-        
-    setFlash('success', 'কাস্টমার তথ্য আপডেট হয়েছে');
+    $custName = sanitize($_POST['customer_name'] ?? '');
+    $custPhone = sanitize($_POST['customer_phone'] ?? '');
+    $custAddress = sanitize($_POST['shipping_address'] ?? '');
+    $deliveryOptionId = intval($_POST['delivery_charge_id'] ?? 0);
+    $manualDeliveryCharge = floatval($_POST['delivery_charge'] ?? 0);
+
+    if ($custName === '' || $custPhone === '' || $custAddress === '') {
+        setFlash('error', 'কাস্টমারের নাম, ফোন এবং ঠিকানা পূরণ করুন');
+        redirect(adminUrl('resell-order-view/' . $orderId));
+    }
+
+    if ($manualDeliveryCharge < 0) {
+        setFlash('error', 'ডেলিভারি চার্জ ঋণাত্মক হতে পারবে না');
+        redirect(adminUrl('resell-order-view/' . $orderId));
+    }
+
+    try {
+        $pdo->beginTransaction();
+
+        // Lock the order so price/profit/balance calculations remain consistent.
+        $lockStmt = $pdo->prepare("SELECT * FROM resell_orders WHERE id = ? FOR UPDATE");
+        $lockStmt->execute([$orderId]);
+        $currentOrder = $lockStmt->fetch();
+        if (!$currentOrder) {
+            throw new Exception('অর্ডার পাওয়া যায়নি');
+        }
+
+        $custArea = $currentOrder['shipping_area'];
+        if ($deliveryOptionId > 0) {
+            $dcStmt = $pdo->prepare("SELECT id, name, charge FROM resell_delivery_charges WHERE id = ? AND status = 1");
+            $dcStmt->execute([$deliveryOptionId]);
+            $deliveryOption = $dcStmt->fetch();
+            if (!$deliveryOption) {
+                throw new Exception('নির্বাচিত ডেলিভারি এলাকা পাওয়া যায়নি');
+            }
+            $custArea = $deliveryOption['name'];
+        } elseif ($custArea === '' || $custArea === null) {
+            $custArea = 'custom';
+        }
+
+        $oldDeliveryCharge = (float)$currentOrder['delivery_charge'];
+        $newDeliveryCharge = $manualDeliveryCharge;
+        $newProfit = round((float)$currentOrder['reseller_price'] - ((float)$currentOrder['original_price'] + $newDeliveryCharge), 2);
+        $newShortfall = resellShortfallAmount(
+            (float)$currentOrder['original_price'],
+            $newDeliveryCharge,
+            (float)$currentOrder['reseller_price']
+        );
+
+        // NOTE 08: delivery changes may create/remove a below-cost shortfall.
+        // Reconcile the reseller balance transactionally before saving the new totals.
+        $financeState = resellReconcileOrderPricing($pdo, $currentOrder, $newProfit, $newShortfall);
+
+        $pdo->prepare("UPDATE resell_orders
+            SET customer_name = ?, customer_phone = ?, shipping_address = ?, shipping_area = ?,
+                delivery_charge = ?, profit = ?, shortfall_amount = ?,
+                profit_credited = ?, shortfall_deducted = ?, shortfall_refunded = ?, updated_at = NOW()
+            WHERE id = ?")
+            ->execute([
+                $custName,
+                $custPhone,
+                $custAddress,
+                $custArea,
+                $newDeliveryCharge,
+                $newProfit,
+                $newShortfall,
+                $financeState['profit_credited'],
+                $financeState['shortfall_deducted'],
+                $financeState['shortfall_refunded'],
+                $orderId
+            ]);
+
+        // If a return-delivery charge was already deducted, keep that one-time
+        // deduction aligned with the newly saved delivery charge.
+        if (!empty($currentOrder['is_return_deducted'])) {
+            $chargeDelta = $newDeliveryCharge - $oldDeliveryCharge;
+            if ($chargeDelta > 0) {
+                deductResellerBalance($currentOrder['reseller_id'], $chargeDelta, "অর্ডার #" . $currentOrder['order_number'] . " রিটার্ন ডেলিভারি চার্জ সমন্বয়", 'adjustment', $orderId);
+            } elseif ($chargeDelta < 0) {
+                addResellerBalance($currentOrder['reseller_id'], abs($chargeDelta), "অর্ডার #" . $currentOrder['order_number'] . " রিটার্ন ডেলিভারি চার্জ সমন্বয়", 'adjustment', $orderId);
+            }
+        }
+
+        $pdo->commit();
+        setFlash('success', 'কাস্টমার তথ্য ও ডেলিভারি চার্জ আপডেট হয়েছে');
+    } catch (Throwable $e) {
+        if ($pdo->inTransaction()) {
+            $pdo->rollBack();
+        }
+        setFlash('error', $e->getMessage());
+    }
+
     redirect(adminUrl('resell-order-view/' . $orderId));
 }
 
@@ -100,7 +167,7 @@ $statusColors = [
     'processing' => 'info',
     'shipped' => 'primary',
     'delivered' => 'success',
-    'return' => 'secondary',
+    'returned' => 'secondary',
     'cancelled' => 'danger'
 ];
 
@@ -109,7 +176,7 @@ $statusLabels = [
     'processing' => 'প্রসেসিং',
     'shipped' => 'শিপড',
     'delivered' => 'ডেলিভার্ড',
-    'return' => 'রিটার্ন',
+    'returned' => 'রিটার্ন',
     'cancelled' => 'বাতিল'
 ];
 ?>
@@ -146,7 +213,8 @@ $statusLabels = [
                             <p class="mb-1"><strong>নাম:</strong> <?php echo sanitize($order['customer_name']); ?></p>
                             <p class="mb-1"><strong>ফোন:</strong> <?php echo $order['customer_phone']; ?></p>
                             <p class="mb-1"><strong>ঠিকানা:</strong> <?php echo sanitize($order['shipping_address']); ?></p>
-                            <p class="mb-1"><strong>এলাকা:</strong> <?php echo $order['shipping_area'] === 'inside_dhaka' ? 'ঢাকার ভিতরে' : 'ঢাকার বাইরে'; ?></p>
+                            <p class="mb-1"><strong>এলাকা:</strong> <?php echo sanitize(resellOrderShippingAreaLabel($order['shipping_area'])); ?></p>
+                            <p class="mb-1"><strong>ডেলিভারি চার্জ:</strong> <?php echo formatPrice($order['delivery_charge']); ?></p>
                         </div>
                         <div class="col-md-6">
                             <h6>রিসেলার তথ্য</h6>
@@ -182,11 +250,11 @@ $statusLabels = [
                                             <img src="<?php echo imageUrl($item['product_image']); ?>" alt="" style="width: 50px; height: 50px; object-fit: cover; border-radius: 8px;" class="me-2">
                                             <div>
                                                 <strong><?php echo sanitize($item['product_name']); ?></strong>
-                                                <?php 
+                                                <?php
                                                 if (!empty($item['variation'])) {
                                                     // Try to decode as array/object
                                                     $variation = json_decode($item['variation'], true);
-                                                    
+
                                                     if (json_last_error() === JSON_ERROR_NONE) {
                                                         if (is_array($variation)) {
                                                             echo '<br><small class="text-muted">';
@@ -249,11 +317,11 @@ $statusLabels = [
                         <?php if (!empty($order['transaction_id'])): ?>
                             <p class="mb-1"><strong>TrxID:</strong> <?php echo $order['transaction_id']; ?></p>
                         <?php endif; ?>
-                        
+
                          <div class="mt-2">
-                            <strong>স্ট্যাটাস:</strong> 
+                            <strong>স্ট্যাটাস:</strong>
                             <span class="badge bg-<?php echo ($order['payment_status'] ?? '') === 'paid' ? 'success' : (($order['payment_status'] ?? '') === 'pending_verification' ? 'warning' : 'secondary'); ?>">
-                                <?php 
+                                <?php
                                 $pStatus = $order['payment_status'] ?? 'pending';
                                 if ($pStatus === 'paid') echo 'পেইড';
                                 elseif ($pStatus === 'pending_verification') echo 'ভেরিফিকেশন পেন্ডিং';
@@ -289,14 +357,27 @@ $statusLabels = [
                         <span>বিক্রয় মূল্য:</span>
                         <strong class="text-primary"><?php echo formatPrice($order['reseller_price']); ?></strong>
                     </div>
+                    <div class="d-flex justify-content-between mb-2">
+                        <span>ব্যালেন্স থেকে ঘাটতি:</span>
+                        <strong class="<?php echo ((float)($order['shortfall_amount'] ?? 0) > 0) ? 'text-danger' : 'text-muted'; ?>">
+                            <?php echo formatPrice((float)($order['shortfall_amount'] ?? 0)); ?>
+                        </strong>
+                    </div>
+                    <?php if ((float)($order['shortfall_amount'] ?? 0) > 0): ?>
+                    <small class="<?php echo !empty($order['shortfall_refunded']) ? 'text-success' : 'text-danger'; ?> d-block mb-2">
+                        <?php echo !empty($order['shortfall_refunded']) ? 'ঘাটতি ব্যালেন্সে ফেরত হয়েছে' : 'ঘাটতি ব্যালেন্স থেকে কর্তন করা আছে'; ?>
+                    </small>
+                    <?php endif; ?>
                     <hr>
                     <div class="d-flex justify-content-between">
                         <span>রিসেলার প্রফিট:</span>
-                        <?php 
+                        <?php
                         $isCancelled = in_array($order['status'], ['cancelled', 'returned', 'rejected', 'failed']);
                         $isDelivered = $order['status'] === 'delivered';
+                        $profitValue = (float)$order['profit'];
+                        $profitClass = $isCancelled ? 'text-muted' : ($profitValue < 0 ? 'text-danger' : (($isDelivered && $profitValue > 0) ? 'text-success' : 'text-dark'));
                         ?>
-                        <strong class="<?php echo $isDelivered ? 'text-success' : ($isCancelled ? 'text-muted' : 'text-dark'); ?>" style="<?php echo $isCancelled ? 'text-decoration: line-through;' : ''; ?>">
+                        <strong class="<?php echo $profitClass; ?>" style="<?php echo $isCancelled ? 'text-decoration: line-through;' : ''; ?>">
                             <?php echo formatPrice($order['profit']); ?>
                             <?php if ($isDelivered): ?>
                             <i class="bi bi-check-circle-fill"></i>
@@ -305,8 +386,10 @@ $statusLabels = [
                             <?php endif; ?>
                         </strong>
                     </div>
-                    <?php if ($isDelivered): ?>
+                    <?php if ($isDelivered && $profitValue > 0 && !empty($order['profit_credited'])): ?>
                     <small class="text-success">প্রফিট ক্রেডিট হয়েছে</small>
+                    <?php elseif ($isDelivered && $profitValue <= 0): ?>
+                    <small class="text-muted">পজিটিভ প্রফিট নেই; ঘাটতি থাকলে অর্ডারের সময় ব্যালেন্স থেকে সমন্বয় হয়েছে</small>
                     <?php elseif ($isCancelled): ?>
                     <small class="text-muted">প্রফিট বাতিল</small>
                     <?php else: ?>
@@ -328,7 +411,7 @@ $statusLabels = [
                                 <option value="processing" <?php echo $order['status'] === 'processing' ? 'selected' : ''; ?>>প্রসেসিং</option>
                                 <option value="shipped" <?php echo $order['status'] === 'shipped' ? 'selected' : ''; ?>>শিপড</option>
                                 <option value="delivered" <?php echo $order['status'] === 'delivered' ? 'selected' : ''; ?>>ডেলিভার্ড</option>
-                                <option value="return" <?php echo $order['status'] === 'return' ? 'selected' : ''; ?>>রিটার্ন</option>
+                                <option value="returned" <?php echo $order['status'] === 'returned' ? 'selected' : ''; ?>>রিটার্ন</option>
                                 <option value="cancelled" <?php echo $order['status'] === 'cancelled' ? 'selected' : ''; ?>>বাতিল</option>
                             </select>
                         </div>
@@ -379,10 +462,35 @@ $statusLabels = [
                     </div>
                     <div class="mb-3">
                         <label class="form-label">ডেলিভারি এলাকা</label>
-                        <select name="shipping_area" class="form-select" required>
-                            <option value="inside_dhaka" <?php echo $order['shipping_area'] === 'inside_dhaka' ? 'selected' : ''; ?>>ঢাকার ভিতরে</option>
-                            <option value="outside_dhaka" <?php echo $order['shipping_area'] === 'outside_dhaka' ? 'selected' : ''; ?>>ঢাকার বাইরে</option>
+                        <?php
+                        $matchedDeliveryId = 0;
+                        foreach ($deliveryOptions as $dc) {
+                            if ((string)$dc['name'] === (string)$order['shipping_area']) {
+                                $matchedDeliveryId = (int)$dc['id'];
+                                break;
+                            }
+                        }
+                        ?>
+                        <select name="delivery_charge_id" id="editDeliveryArea" class="form-select">
+                            <?php if (!$matchedDeliveryId): ?>
+                            <option value="0" data-charge="<?php echo (float)$order['delivery_charge']; ?>" selected>
+                                বর্তমান/কাস্টম: <?php echo sanitize(resellOrderShippingAreaLabel($order['shipping_area'])); ?>
+                            </option>
+                            <?php endif; ?>
+                            <?php foreach ($deliveryOptions as $dc): ?>
+                            <option value="<?php echo (int)$dc['id']; ?>" data-charge="<?php echo (float)$dc['charge']; ?>" <?php echo $matchedDeliveryId === (int)$dc['id'] ? 'selected' : ''; ?>>
+                                <?php echo sanitize($dc['name']); ?> — <?php echo formatPrice($dc['charge']); ?>
+                            </option>
+                            <?php endforeach; ?>
                         </select>
+                        <div class="form-text">এলাকা নির্বাচন করলে নিচের চার্জ স্বয়ংক্রিয়ভাবে বসবে। প্রয়োজনে অ্যাডমিন চার্জ পরিবর্তন করতে পারবেন।</div>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">ডেলিভারি চার্জ</label>
+                        <div class="input-group">
+                            <span class="input-group-text">৳</span>
+                            <input type="number" name="delivery_charge" id="editDeliveryCharge" class="form-control" value="<?php echo number_format((float)$order['delivery_charge'], 2, '.', ''); ?>" min="0" step="0.01" required>
+                        </div>
                     </div>
                 </div>
                 <div class="modal-footer">
@@ -393,5 +501,21 @@ $statusLabels = [
         </div>
     </div>
 </div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+    const areaSelect = document.getElementById('editDeliveryArea');
+    const chargeInput = document.getElementById('editDeliveryCharge');
+    if (!areaSelect || !chargeInput) return;
+
+    areaSelect.addEventListener('change', function () {
+        const option = this.options[this.selectedIndex];
+        const charge = parseFloat(option.dataset.charge || '0');
+        if (!Number.isNaN(charge)) {
+            chargeInput.value = charge.toFixed(2);
+        }
+    });
+});
+</script>
 
 <?php require_once 'includes/footer.php'; ?>

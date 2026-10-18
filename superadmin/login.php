@@ -5,10 +5,11 @@
  */
 
 require_once '../config/config.php';
+require_once __DIR__ . '/includes/rbac.php';
 
 // Redirect if already logged in
 if (isAdminLoggedIn()) {
-    redirect(adminUrl('dashboard'));
+    redirect(adminFirstAllowedUrl());
 }
 
 // Read remembered credentials from cookies
@@ -46,7 +47,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 setcookie('admin_remember_password', '', time() - 3600, '/');
             }
             
-            redirect(adminUrl('dashboard'));
+            redirect(adminFirstAllowedUrl());
         } else {
             $error = 'ইমেইল বা পাসওয়ার্ড ভুল';
         }

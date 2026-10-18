@@ -6,6 +6,8 @@
 
 require_once __DIR__ . '/../config/config.php';
 requireAdmin();
+require_once __DIR__ . '/includes/rbac.php';
+requireAdminPermissionForCurrentPage();
 
 $pageTitle = 'সেলার কার্যকলাপ';
 $currentPage = 'seller-activity';

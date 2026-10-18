@@ -6,11 +6,375 @@
 
 require_once __DIR__ . '/../config/config.php';
 requireAdmin();
+require_once __DIR__ . '/includes/rbac.php';
+requireAdminPermissionForCurrentPage();
 
 $pageTitle = 'সেলার পণ্য সমূহ';
 $currentPage = 'seller-products';
 
-// Handle actions
+
+/**
+ * NOTE 01: When a seller edits an already-published product, the seller source
+ * becomes pending. Published copies remain unchanged until an admin saves one
+ * of the existing section prices again. At that point all already-published
+ * copies are synchronized from the seller source and the source is approved.
+ */
+function sellerAdminSourceVariations($pdo, $sellerProductId) {
+    $stmt = $pdo->prepare("SELECT attribute_name, attribute_value, price_adjustment, stock FROM seller_product_variations WHERE seller_product_id = ? ORDER BY id ASC");
+    $stmt->execute([$sellerProductId]);
+    return $stmt->fetchAll();
+}
+
+function sellerAdminReplaceVariations($pdo, $table, $foreignKey, $publishedProductId, $variations) {
+    $allowed = [
+        'product_variations' => 'product_id',
+        'wholesale_product_variations' => 'wholesale_product_id',
+        'resell_product_variations' => 'resell_product_id',
+    ];
+
+    if (!isset($allowed[$table]) || $allowed[$table] !== $foreignKey) {
+        throw new RuntimeException('Invalid variation target');
+    }
+
+    $pdo->prepare("DELETE FROM {$table} WHERE {$foreignKey} = ?")->execute([$publishedProductId]);
+
+    if (empty($variations)) {
+        return;
+    }
+
+    $insert = $pdo->prepare(
+        "INSERT INTO {$table} ({$foreignKey}, attribute_name, attribute_value, price_adjustment, stock)
+         VALUES (?, ?, ?, ?, ?)"
+    );
+
+    foreach ($variations as $variation) {
+        $insert->execute([
+            $publishedProductId,
+            $variation['attribute_name'],
+            $variation['attribute_value'],
+            $variation['price_adjustment'] ?? 0,
+            $variation['stock'] ?? 0,
+        ]);
+    }
+}
+
+function sellerAdminSyncPublishedListings($pdo, $product) {
+    $sellerProductId = (int)$product['id'];
+    $sellerId = (int)$product['seller_id'];
+    $variations = !empty($product['has_variations'])
+        ? sellerAdminSourceVariations($pdo, $sellerProductId)
+        : [];
+
+    // Retail listing(s): keep the admin-controlled retail price, sync seller-editable content.
+    if (!empty($product['retail_added'])) {
+        $stmt = $pdo->prepare("SELECT id FROM products WHERE seller_product_id = ? AND seller_id = ?");
+        $stmt->execute([$sellerProductId, $sellerId]);
+        $retailRows = $stmt->fetchAll();
+
+        foreach ($retailRows as $row) {
+            $pdo->prepare("
+                UPDATE products
+                SET name = ?, description = ?, regular_price = ?, image = ?, gallery = ?, video_url = ?,
+                    category_id = ?, has_variations = ?, stock_quantity = ?
+                WHERE id = ?
+            ")->execute([
+                $product['name'],
+                $product['description'],
+                $product['retail_price'],
+                $product['image'],
+                $product['gallery'],
+                $product['video_url'],
+                $product['category_id'],
+                $product['has_variations'],
+                $product['stock'],
+                $row['id'],
+            ]);
+
+            sellerAdminReplaceVariations(
+                $pdo,
+                'product_variations',
+                'product_id',
+                (int)$row['id'],
+                $variations
+            );
+        }
+    }
+
+    // Wholesale listing(s): keep admin-controlled wholesale price/minimum quantity.
+    if (!empty($product['wholesale_added'])) {
+        $stmt = $pdo->prepare("SELECT id FROM wholesale_products WHERE seller_product_id = ? AND seller_id = ?");
+        $stmt->execute([$sellerProductId, $sellerId]);
+        $wholesaleRows = $stmt->fetchAll();
+
+        foreach ($wholesaleRows as $row) {
+            $pdo->prepare("
+                UPDATE wholesale_products
+                SET name = ?, description = ?, wholesale_price = ?, min_order_qty = ?, image = ?, gallery = ?,
+                    video_url = ?, category_id = ?, has_variations = ?, stock = ?
+                WHERE id = ?
+            ")->execute([
+                $product['name'],
+                $product['description'],
+                $product['wholesale_price'],
+                max(1, (int)($product['wholesale_min_qty'] ?? 1)),
+                $product['image'],
+                $product['gallery'],
+                $product['video_url'],
+                $product['category_id'],
+                $product['has_variations'],
+                $product['stock'],
+                $row['id'],
+            ]);
+
+            sellerAdminReplaceVariations(
+                $pdo,
+                'wholesale_product_variations',
+                'wholesale_product_id',
+                (int)$row['id'],
+                $variations
+            );
+        }
+    }
+
+    // Reseller listing(s): seller price becomes the base/original cost; reseller price stays admin-controlled.
+    if (!empty($product['reseller_added'])) {
+        $stmt = $pdo->prepare("SELECT id FROM resell_products WHERE seller_product_id = ? AND seller_id = ?");
+        $stmt->execute([$sellerProductId, $sellerId]);
+        $resellRows = $stmt->fetchAll();
+
+        foreach ($resellRows as $row) {
+            $pdo->prepare("
+                UPDATE resell_products
+                SET name = ?, description = ?, original_price = ?, reseller_price = ?, image = ?, gallery = ?,
+                    video_url = ?, category_id = ?, has_variations = ?, stock_quantity = ?
+                WHERE id = ?
+            ")->execute([
+                $product['name'],
+                $product['description'],
+                $product['seller_price'],
+                $product['reseller_price'],
+                $product['image'],
+                $product['gallery'],
+                $product['video_url'],
+                $product['category_id'],
+                $product['has_variations'],
+                $product['stock'],
+                $row['id'],
+            ]);
+
+            sellerAdminReplaceVariations(
+                $pdo,
+                'resell_product_variations',
+                'resell_product_id',
+                (int)$row['id'],
+                $variations
+            );
+        }
+    }
+}
+
+function sellerAdminLogReapproval($pdo, $product) {
+    $pdo->prepare("
+        INSERT INTO seller_activity (activity_type, seller_id, seller_product_id, description)
+        VALUES ('product_approved', ?, ?, ?)
+    ")->execute([
+        $product['seller_id'],
+        $product['id'],
+        'সেলার কর্তৃক এডিট করা পণ্য পুনরায় অনুমোদন করা হয়েছে',
+    ]);
+}
+
+
+/**
+ * NOTE 02: Save prices for a selected seller product in one batch operation.
+ * Existing per-row save buttons remain unchanged. New listings are created only
+ * for sections that have a valid price; existing listings are updated in place.
+ */
+function sellerAdminBulkSaveProduct($pdo, $product, $values) {
+    $productId = (int)$product['id'];
+    $wasPending = ($product['status'] === 'pending');
+    $changed = false;
+
+    $resellerRaw = trim((string)($values['reseller_price'] ?? ''));
+    $wholesaleRaw = trim((string)($values['wholesale_price'] ?? ''));
+    $retailRaw = trim((string)($values['retail_price'] ?? ''));
+    $wholesaleMinQty = max(1, (int)($values['wholesale_min_qty'] ?? 1));
+
+    // Reseller price/listing
+    if ($resellerRaw !== '' && (float)$resellerRaw > 0) {
+        $resellerPrice = (float)$resellerRaw;
+
+        if (empty($product['reseller_added'])) {
+            $slug = $product['slug'] . '-resell-' . time() . '-' . $productId;
+            $stmt = $pdo->prepare("\n                INSERT INTO resell_products
+                    (name, slug, description, original_price, reseller_price, image, gallery, category_id,
+                     stock_quantity, status, seller_id, seller_product_id, has_variations)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+            ");
+            $stmt->execute([
+                $product['name'], $slug, $product['description'],
+                $product['seller_price'], $resellerPrice,
+                $product['image'], $product['gallery'], $product['category_id'], $product['stock'],
+                $product['seller_id'], $productId, $product['has_variations']
+            ]);
+
+            $product['reseller_added'] = 1;
+        }
+
+        $product['reseller_price'] = $resellerPrice;
+        $pdo->prepare("UPDATE seller_products SET reseller_price = ?, reseller_added = 1 WHERE id = ?")
+            ->execute([$resellerPrice, $productId]);
+        $changed = true;
+    }
+
+    // Wholesale price/listing
+    if ($wholesaleRaw !== '' && (float)$wholesaleRaw > 0) {
+        $wholesalePrice = (float)$wholesaleRaw;
+
+        if (empty($product['wholesale_added'])) {
+            $slug = $product['slug'] . '-wholesale-' . time() . '-' . $productId;
+            $stmt = $pdo->prepare("\n                INSERT INTO wholesale_products
+                    (name, slug, description, wholesale_price, min_order_qty, image, gallery, video_url,
+                     category_id, stock, status, seller_id, seller_product_id, has_variations)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+            ");
+            $stmt->execute([
+                $product['name'], $slug, $product['description'],
+                $wholesalePrice, $wholesaleMinQty,
+                $product['image'], $product['gallery'], $product['video_url'],
+                $product['category_id'], $product['stock'],
+                $product['seller_id'], $productId, $product['has_variations']
+            ]);
+
+            $product['wholesale_added'] = 1;
+        }
+
+        $product['wholesale_price'] = $wholesalePrice;
+        $product['wholesale_min_qty'] = $wholesaleMinQty;
+        $pdo->prepare("UPDATE seller_products SET wholesale_price = ?, wholesale_min_qty = ?, wholesale_added = 1 WHERE id = ?")
+            ->execute([$wholesalePrice, $wholesaleMinQty, $productId]);
+        $changed = true;
+    }
+
+    // Retail price/listing
+    if ($retailRaw !== '' && (float)$retailRaw > 0) {
+        $retailPrice = (float)$retailRaw;
+
+        if (empty($product['retail_added'])) {
+            $slug = $product['slug'] . '-retail-' . time() . '-' . $productId;
+            $stmt = $pdo->prepare("\n                INSERT INTO products
+                    (name, slug, description, regular_price, image, gallery, video_url, category_id,
+                     has_variations, stock_quantity, status, seller_id, seller_product_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+            ");
+            $stmt->execute([
+                $product['name'], $slug, $product['description'], $retailPrice,
+                $product['image'], $product['gallery'], $product['video_url'],
+                $product['category_id'], $product['has_variations'], $product['stock'],
+                $product['seller_id'], $productId
+            ]);
+
+            $product['retail_added'] = 1;
+        }
+
+        $product['retail_price'] = $retailPrice;
+        $pdo->prepare("UPDATE seller_products SET retail_price = ?, retail_added = 1 WHERE id = ?")
+            ->execute([$retailPrice, $productId]);
+        $changed = true;
+    }
+
+    if (!$changed) {
+        return false;
+    }
+
+    $pdo->prepare("UPDATE seller_products SET status = 'approved', admin_notes = NULL WHERE id = ?")
+        ->execute([$productId]);
+
+    $product['status'] = 'approved';
+    $product['admin_notes'] = null;
+
+    // Synchronize every already-published copy only after all selected prices are stored.
+    sellerAdminSyncPublishedListings($pdo, $product);
+
+    if ($wasPending) {
+        sellerAdminLogReapproval($pdo, $product);
+    }
+
+    return true;
+}
+
+// NOTE 02: Bulk actions must be handled before the per-row action block.
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['bulk_action'])) {
+    $bulkAction = $_POST['bulk_action'];
+    $productIds = array_values(array_unique(array_filter(array_map('intval', $_POST['product_ids'] ?? []))));
+
+    if (empty($productIds)) {
+        setFlash('error', 'কমপক্ষে একটি পণ্য সিলেক্ট করুন।');
+        redirect(adminUrl('seller-products.php'));
+    }
+
+    if ($bulkAction === 'save_selected') {
+        $bulkPrices = $_POST['bulk_prices'] ?? [];
+        $savedCount = 0;
+        $skippedCount = 0;
+
+        try {
+            $pdo->beginTransaction();
+
+            $productStmt = $pdo->prepare("\n                SELECT sp.*, s.name AS seller_name, s.id AS seller_id
+                FROM seller_products sp
+                JOIN sellers s ON sp.seller_id = s.id
+                WHERE sp.id = ?
+                FOR UPDATE
+            ");
+
+            foreach ($productIds as $selectedProductId) {
+                $productStmt->execute([$selectedProductId]);
+                $selectedProduct = $productStmt->fetch();
+
+                if (!$selectedProduct) {
+                    $skippedCount++;
+                    continue;
+                }
+
+                $values = $bulkPrices[$selectedProductId] ?? [];
+                if (sellerAdminBulkSaveProduct($pdo, $selectedProduct, $values)) {
+                    $savedCount++;
+                } else {
+                    $skippedCount++;
+                }
+            }
+
+            $pdo->commit();
+
+            if ($savedCount > 0) {
+                $message = $savedCount . ' টি নির্বাচিত পণ্যের প্রাইস/অনুমোদন একসাথে সেভ হয়েছে।';
+                if ($skippedCount > 0) {
+                    $message .= ' ' . $skippedCount . ' টি পণ্যে বৈধ প্রাইস না থাকায় স্কিপ হয়েছে।';
+                }
+                setFlash('success', $message);
+            } else {
+                setFlash('error', 'নির্বাচিত পণ্যগুলোতে সেভ করার মতো বৈধ প্রাইস পাওয়া যায়নি।');
+            }
+        } catch (Throwable $e) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+            setFlash('error', 'বাল্ক সেভ সম্পন্ন করা যায়নি। কোনো পরিবর্তন সংরক্ষণ করা হয়নি।');
+        }
+
+        redirect(adminUrl('seller-products.php'));
+    }
+
+    if ($bulkAction === 'delete') {
+        $placeholders = implode(',', array_fill(0, count($productIds), '?'));
+        $pdo->prepare("DELETE FROM seller_products WHERE id IN ($placeholders)")->execute($productIds);
+        setFlash('success', count($productIds) . ' টি পণ্য মুছে ফেলা হয়েছে।');
+        redirect(adminUrl('seller-products.php'));
+    }
+}
+
+// Handle existing per-row actions
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = $_POST['action'] ?? '';
     $productId = intval($_POST['product_id'] ?? 0);
@@ -55,8 +419,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     }
                     
                     // Update seller product
-                    $pdo->prepare("UPDATE seller_products SET reseller_price = ?, reseller_added = 1, status = 'approved' WHERE id = ?")
+                    $pdo->prepare("UPDATE seller_products SET reseller_price = ?, reseller_added = 1, status = 'approved', admin_notes = NULL WHERE id = ?")
                         ->execute([$resellerPrice, $productId]);
+
+                    $product['reseller_price'] = $resellerPrice;
+                    $product['reseller_added'] = 1;
+                    $product['status'] = 'approved';
+                    $product['admin_notes'] = null;
+                    sellerAdminSyncPublishedListings($pdo, $product);
                     
                     // Log activity
                     $pdo->prepare("INSERT INTO seller_activity (activity_type, seller_id, seller_product_id, description) VALUES ('product_added', ?, ?, ?)")
@@ -98,8 +468,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     }
                     
                     // Update seller product
-                    $pdo->prepare("UPDATE seller_products SET wholesale_price = ?, wholesale_min_qty = ?, wholesale_added = 1, status = 'approved' WHERE id = ?")
+                    $pdo->prepare("UPDATE seller_products SET wholesale_price = ?, wholesale_min_qty = ?, wholesale_added = 1, status = 'approved', admin_notes = NULL WHERE id = ?")
                         ->execute([$wholesalePrice, $wholesaleMinQty, $productId]);
+
+                    $product['wholesale_price'] = $wholesalePrice;
+                    $product['wholesale_min_qty'] = $wholesaleMinQty;
+                    $product['wholesale_added'] = 1;
+                    $product['status'] = 'approved';
+                    $product['admin_notes'] = null;
+                    sellerAdminSyncPublishedListings($pdo, $product);
                     
                     // Log activity
                     $pdo->prepare("INSERT INTO seller_activity (activity_type, seller_id, seller_product_id, description) VALUES ('product_added', ?, ?, ?)")
@@ -140,8 +517,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     }
                     
                     // Update seller product
-                    $pdo->prepare("UPDATE seller_products SET retail_price = ?, retail_added = 1, status = 'approved' WHERE id = ?")
+                    $pdo->prepare("UPDATE seller_products SET retail_price = ?, retail_added = 1, status = 'approved', admin_notes = NULL WHERE id = ?")
                         ->execute([$retailPrice, $productId]);
+
+                    $product['retail_price'] = $retailPrice;
+                    $product['retail_added'] = 1;
+                    $product['status'] = 'approved';
+                    $product['admin_notes'] = null;
+                    sellerAdminSyncPublishedListings($pdo, $product);
                     
                     // Log activity
                     $pdo->prepare("INSERT INTO seller_activity (activity_type, seller_id, seller_product_id, description) VALUES ('product_added', ?, ?, ?)")
@@ -183,42 +566,92 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             } elseif ($action === 'update_reseller') {
                 $resellerPrice = floatval($_POST['reseller_price'] ?? 0);
                 if ($resellerPrice > 0) {
-                    $pdo->prepare("UPDATE seller_products SET reseller_price = ? WHERE id = ?")
-                        ->execute([$resellerPrice, $productId]);
-                        
-                    // Propagate to resell_products
-                    $slugPattern = $product['slug'] . '-resell-%';
-                    $pdo->prepare("UPDATE resell_products SET reseller_price = ? WHERE slug LIKE ?")
-                        ->execute([$resellerPrice, $slugPattern]);
-                        
-                    setFlash('success', 'রিসেলার প্রাইস আপডেট হয়েছে।');
+                    $wasPending = ($product['status'] === 'pending');
+                    try {
+                        $pdo->beginTransaction();
+
+                        $pdo->prepare("UPDATE seller_products SET reseller_price = ?, status = 'approved', admin_notes = NULL WHERE id = ?")
+                            ->execute([$resellerPrice, $productId]);
+
+                        $product['reseller_price'] = $resellerPrice;
+                        $product['status'] = 'approved';
+                        $product['admin_notes'] = null;
+
+                        // Re-approval syncs all already-published copies, not only the clicked section.
+                        sellerAdminSyncPublishedListings($pdo, $product);
+
+                        if ($wasPending) {
+                            sellerAdminLogReapproval($pdo, $product);
+                        }
+
+                        $pdo->commit();
+                        setFlash('success', $wasPending ? 'পণ্য পুনরায় অনুমোদিত হয়েছে এবং প্রকাশিত তথ্য আপডেট হয়েছে।' : 'রিসেলার প্রাইস আপডেট হয়েছে।');
+                    } catch (Exception $e) {
+                        if ($pdo->inTransaction()) {
+                            $pdo->rollBack();
+                        }
+                        setFlash('error', 'পণ্য আপডেট করা যায়নি। আবার চেষ্টা করুন।');
+                    }
                 }
             } elseif ($action === 'update_wholesale') {
                 $wholesalePrice = floatval($_POST['wholesale_price'] ?? 0);
-                $wholesaleMinQty = intval($_POST['wholesale_min_qty'] ?? 1);
+                $wholesaleMinQty = max(1, intval($_POST['wholesale_min_qty'] ?? 1));
                 if ($wholesalePrice > 0) {
-                    $pdo->prepare("UPDATE seller_products SET wholesale_price = ?, wholesale_min_qty = ? WHERE id = ?")
-                        ->execute([$wholesalePrice, $wholesaleMinQty, $productId]);
-                        
-                    // Propagate to wholesale_products
-                    $slugPattern = $product['slug'] . '-wholesale-%';
-                    $pdo->prepare("UPDATE wholesale_products SET wholesale_price = ?, min_order_qty = ? WHERE slug LIKE ?")
-                        ->execute([$wholesalePrice, $wholesaleMinQty, $slugPattern]);
-                        
-                    setFlash('success', 'পাইকারি প্রাইস আপডেট হয়েছে।');
+                    $wasPending = ($product['status'] === 'pending');
+                    try {
+                        $pdo->beginTransaction();
+
+                        $pdo->prepare("UPDATE seller_products SET wholesale_price = ?, wholesale_min_qty = ?, status = 'approved', admin_notes = NULL WHERE id = ?")
+                            ->execute([$wholesalePrice, $wholesaleMinQty, $productId]);
+
+                        $product['wholesale_price'] = $wholesalePrice;
+                        $product['wholesale_min_qty'] = $wholesaleMinQty;
+                        $product['status'] = 'approved';
+                        $product['admin_notes'] = null;
+
+                        sellerAdminSyncPublishedListings($pdo, $product);
+
+                        if ($wasPending) {
+                            sellerAdminLogReapproval($pdo, $product);
+                        }
+
+                        $pdo->commit();
+                        setFlash('success', $wasPending ? 'পণ্য পুনরায় অনুমোদিত হয়েছে এবং প্রকাশিত তথ্য আপডেট হয়েছে।' : 'পাইকারি প্রাইস আপডেট হয়েছে।');
+                    } catch (Exception $e) {
+                        if ($pdo->inTransaction()) {
+                            $pdo->rollBack();
+                        }
+                        setFlash('error', 'পণ্য আপডেট করা যায়নি। আবার চেষ্টা করুন।');
+                    }
                 }
             } elseif ($action === 'update_retail') {
                 $retailPrice = floatval($_POST['retail_price'] ?? 0);
                 if ($retailPrice > 0) {
-                    $pdo->prepare("UPDATE seller_products SET retail_price = ? WHERE id = ?")
-                        ->execute([$retailPrice, $productId]);
-                        
-                    // Propagate to products (retail)
-                    $slugPattern = $product['slug'] . '-retail-%';
-                    $pdo->prepare("UPDATE products SET regular_price = ? WHERE slug LIKE ?")
-                        ->execute([$retailPrice, $slugPattern]);
-                        
-                    setFlash('success', 'খুচরা প্রাইস আপডেট হয়েছে।');
+                    $wasPending = ($product['status'] === 'pending');
+                    try {
+                        $pdo->beginTransaction();
+
+                        $pdo->prepare("UPDATE seller_products SET retail_price = ?, status = 'approved', admin_notes = NULL WHERE id = ?")
+                            ->execute([$retailPrice, $productId]);
+
+                        $product['retail_price'] = $retailPrice;
+                        $product['status'] = 'approved';
+                        $product['admin_notes'] = null;
+
+                        sellerAdminSyncPublishedListings($pdo, $product);
+
+                        if ($wasPending) {
+                            sellerAdminLogReapproval($pdo, $product);
+                        }
+
+                        $pdo->commit();
+                        setFlash('success', $wasPending ? 'পণ্য পুনরায় অনুমোদিত হয়েছে এবং প্রকাশিত তথ্য আপডেট হয়েছে।' : 'খুচরা প্রাইস আপডেট হয়েছে।');
+                    } catch (Exception $e) {
+                        if ($pdo->inTransaction()) {
+                            $pdo->rollBack();
+                        }
+                        setFlash('error', 'পণ্য আপডেট করা যায়নি। আবার চেষ্টা করুন।');
+                    }
                 }
             } elseif ($action === 'reject') {
                 $reason = sanitize($_POST['reason'] ?? '');
@@ -246,17 +679,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
     
     redirect(adminUrl('seller-products.php' . (isset($_GET['seller_id']) ? '?seller_id=' . intval($_GET['seller_id']) : '')));
-}
-
-// Handle bulk delete
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['bulk_action']) && $_POST['bulk_action'] === 'delete') {
-    $productIds = $_POST['product_ids'] ?? [];
-    if (!empty($productIds)) {
-        $placeholders = implode(',', array_fill(0, count($productIds), '?'));
-        $pdo->prepare("DELETE FROM seller_products WHERE id IN ($placeholders)")->execute($productIds);
-        setFlash('success', count($productIds) . ' টি পণ্য মুছে ফেলা হয়েছে।');
-    }
-    redirect(adminUrl('seller-products.php'));
 }
 
 // Filters
@@ -486,18 +908,26 @@ require_once 'includes/header.php';
     </div>
     <?php else: ?>
     
-    <!-- Bulk Actions -->
-    <form method="POST" id="bulkForm">
-        <input type="hidden" name="bulk_action" value="delete">
-        
+    <!-- Bulk Actions: existing row save buttons stay; this adds one-save multi-select support. -->
+    <form method="POST" id="bulkBatchForm" class="d-none">
+        <input type="hidden" name="bulk_action" id="bulkActionInput" value="save_selected">
+        <div id="bulkPayload"></div>
+    </form>
+
+    <div id="bulkSelectionArea">
         <div class="bulk-action-bar" id="bulkActionBar" style="display: none;">
-            <div class="container-fluid d-flex justify-content-between align-items-center">
+            <div class="container-fluid d-flex justify-content-between align-items-center gap-3">
                 <div class="d-flex align-items-center gap-2">
-                    <span class="badge bg-light text-dark ms-2"><span id="selectedCount">0</span> টি নির্বাচিত</span>
+                    <span class="badge bg-light text-dark"><span id="selectedCount">0</span> টি নির্বাচিত</span>
                 </div>
-                <button type="submit" class="btn btn-danger btn-sm" onclick="return confirm('নির্বাচিত পণ্যগুলো মুছে ফেলতে চান?')">
-                    <i class="bi bi-trash me-1"></i>নির্বাচিত মুছুন
-                </button>
+                <div class="d-flex align-items-center gap-2">
+                    <button type="button" id="bulkSaveBtn" class="btn btn-success btn-sm" onclick="submitBulkAction('save_selected')">
+                        <i class="bi bi-check2-square me-1"></i>সিলেক্টেড সেভ করুন
+                    </button>
+                    <button type="button" id="bulkDeleteBtn" class="btn btn-danger btn-sm" onclick="submitBulkAction('delete')">
+                        <i class="bi bi-trash me-1"></i>নির্বাচিত মুছুন
+                    </button>
+                </div>
             </div>
         </div>
 
@@ -506,15 +936,16 @@ require_once 'includes/header.php';
                 <input type="checkbox" id="selectAll" class="form-check-input" onclick="toggleSelectAll()">
                 <label for="selectAll" class="form-check-label fw-bold">সব সিলেক্ট করুন</label>
             </div>
+            <small class="text-muted">পছন্দের পণ্যগুলোর প্রাইস লিখে একবারে “সিলেক্টেড সেভ করুন” চাপুন।</small>
         </div>
     
         <div class="product-list-container">
             <?php foreach ($products as $product): ?>
-            <div class="admin-product-card">
+            <div class="admin-product-card" data-product-id="<?php echo $product['id']; ?>">
                 <div class="card-header-section d-flex justify-content-between align-items-start">
                     <div class="d-flex gap-3 align-items-center">
                         <div class="checkbox-wrapper">
-                            <input type="checkbox" name="product_ids[]" value="<?php echo $product['id']; ?>" class="form-check-input product-checkbox" form="bulkForm" onchange="updateBulkBtn()">
+                            <input type="checkbox" value="<?php echo $product['id']; ?>" class="form-check-input product-checkbox" data-product-id="<?php echo $product['id']; ?>" onchange="updateBulkBtn()">
                         </div>
                         <div class="product-img-wrapper">
                             <?php if ($product['image']): ?>
@@ -544,6 +975,13 @@ require_once 'includes/header.php';
                     </div>
                 </div>
 
+                <?php if ($product['status'] === 'pending' && (!empty($product['retail_added']) || !empty($product['wholesale_added']) || !empty($product['reseller_added']))): ?>
+                <div class="alert alert-warning py-2 px-3 mx-3 mt-3 mb-0 small">
+                    <i class="bi bi-pencil-square me-1"></i>
+                    সেলার প্রকাশিত পণ্যটি এডিট করেছে। নিচের যেকোনো বিদ্যমান প্রাইস সেভ করলে সম্পাদিত তথ্য পুনরায় অনুমোদিত হয়ে সব প্রকাশিত সেকশনে আপডেট হবে।
+                </div>
+                <?php endif; ?>
+
                 <div class="card-body-section">
                     <div class="row align-items-end g-3">
                         <!-- Seller Price (Read Only) -->
@@ -564,7 +1002,7 @@ require_once 'includes/header.php';
                                 </label>
                                 <div class="input-group input-group-sm">
                                     <span class="input-group-text">৳</span>
-                                    <input type="number" name="reseller_price" class="form-control" placeholder="0.00" step="0.01" value="<?php echo $product['reseller_price'] ?: ''; ?>" required>
+                                    <input type="number" name="reseller_price" class="form-control bulk-reseller-price" data-bulk-field="reseller_price" placeholder="0.00" step="0.01" value="<?php echo $product['reseller_price'] ?: ''; ?>" required>
                                     <button type="submit" class="btn <?php echo $product['reseller_added'] ? 'btn-primary' : 'btn-outline-primary'; ?>" title="সেভ করুন">
                                         <i class="bi bi-check-lg"></i>
                                     </button>
@@ -582,9 +1020,9 @@ require_once 'includes/header.php';
                                 </label>
                                 <div class="input-group input-group-sm">
                                     <span class="input-group-text">৳</span>
-                                    <input type="number" name="wholesale_price" class="form-control" placeholder="দাম" step="0.01" value="<?php echo $product['wholesale_price'] ?: ''; ?>" required>
+                                    <input type="number" name="wholesale_price" class="form-control bulk-wholesale-price" data-bulk-field="wholesale_price" placeholder="দাম" step="0.01" value="<?php echo $product['wholesale_price'] ?: ''; ?>" required>
                                     <span class="input-group-text bg-white border-end-0">Min</span>
-                                    <input type="number" name="wholesale_min_qty" class="form-control" placeholder="Qty" value="<?php echo $product['wholesale_min_qty'] ?: 1; ?>" min="1" style="max-width: 60px;">
+                                    <input type="number" name="wholesale_min_qty" class="form-control bulk-wholesale-min" data-bulk-field="wholesale_min_qty" placeholder="Qty" value="<?php echo $product['wholesale_min_qty'] ?: 1; ?>" min="1" style="max-width: 60px;">
                                     <button type="submit" class="btn <?php echo $product['wholesale_added'] ? 'btn-warning text-dark' : 'btn-outline-warning text-dark'; ?>" title="সেভ করুন">
                                         <i class="bi bi-check-lg"></i>
                                     </button>
@@ -602,7 +1040,7 @@ require_once 'includes/header.php';
                                 </label>
                                 <div class="input-group input-group-sm">
                                     <span class="input-group-text">৳</span>
-                                    <input type="number" name="retail_price" class="form-control" placeholder="0.00" step="0.01" value="<?php echo $product['retail_price'] ?: ''; ?>" required>
+                                    <input type="number" name="retail_price" class="form-control bulk-retail-price" data-bulk-field="retail_price" placeholder="0.00" step="0.01" value="<?php echo $product['retail_price'] ?: ''; ?>" required>
                                     <button type="submit" class="btn <?php echo $product['retail_added'] ? 'btn-success' : 'btn-outline-success'; ?>" title="সেভ করুন">
                                         <i class="bi bi-check-lg"></i>
                                     </button>
@@ -639,7 +1077,7 @@ require_once 'includes/header.php';
             </div>
             <?php endforeach; ?>
         </div>
-    </form>
+    </div>
     <?php endif; ?>
 </div>
 
@@ -893,15 +1331,65 @@ function toggleSelectAll() {
 }
 
 function updateBulkBtn() {
-    const checkboxes = document.querySelectorAll('.product-checkbox:checked');
-    const btn = document.getElementById('bulkDeleteBtn');
+    const all = Array.from(document.querySelectorAll('.product-checkbox'));
+    const selected = all.filter(cb => cb.checked);
+    const bar = document.getElementById('bulkActionBar');
     const count = document.getElementById('selectedCount');
-    if (checkboxes.length > 0) {
-        btn.style.display = 'inline-block';
-        count.textContent = checkboxes.length;
-    } else {
-        btn.style.display = 'none';
+    const selectAll = document.getElementById('selectAll');
+
+    count.textContent = selected.length;
+    bar.style.display = selected.length > 0 ? 'block' : 'none';
+
+    if (selectAll) {
+        selectAll.checked = all.length > 0 && selected.length === all.length;
+        selectAll.indeterminate = selected.length > 0 && selected.length < all.length;
     }
+}
+
+function appendBulkHidden(container, name, value) {
+    const input = document.createElement('input');
+    input.type = 'hidden';
+    input.name = name;
+    input.value = value;
+    container.appendChild(input);
+}
+
+function submitBulkAction(action) {
+    const selected = Array.from(document.querySelectorAll('.product-checkbox:checked'));
+    if (selected.length === 0) {
+        alert('কমপক্ষে একটি পণ্য সিলেক্ট করুন');
+        return;
+    }
+
+    if (action === 'delete' && !confirm('নির্বাচিত পণ্যগুলো মুছে ফেলতে চান?')) {
+        return;
+    }
+
+    const form = document.getElementById('bulkBatchForm');
+    const payload = document.getElementById('bulkPayload');
+    const actionInput = document.getElementById('bulkActionInput');
+    payload.innerHTML = '';
+    actionInput.value = action;
+
+    selected.forEach(checkbox => {
+        const productId = checkbox.value;
+        appendBulkHidden(payload, 'product_ids[]', productId);
+
+        if (action === 'save_selected') {
+            const card = checkbox.closest('.admin-product-card');
+            if (!card) return;
+
+            card.querySelectorAll('[data-bulk-field]').forEach(input => {
+                appendBulkHidden(
+                    payload,
+                    `bulk_prices[${productId}][${input.dataset.bulkField}]`,
+                    input.value
+                );
+            });
+        }
+    });
+
+    form.submit();
 }
 </script>
 

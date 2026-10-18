@@ -9,6 +9,8 @@ $pageTitle = 'পাইকারি থেকে অ্যাফিলিয়�
 
 require_once __DIR__ . '/../config/config.php';
 requireAdmin();
+require_once __DIR__ . '/includes/rbac.php';
+requireAdminPermissionForCurrentPage();
 
 // Check if wholesale_product_id column exists, if not create it
 $columnExists = false;

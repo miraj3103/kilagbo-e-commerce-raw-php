@@ -9,6 +9,8 @@ $currentPage = 'settings';
 
 require_once __DIR__ . '/../config/config.php';
 requireAdmin();
+require_once __DIR__ . '/includes/rbac.php';
+requireAdminPermissionForCurrentPage();
 
 // Handle form submissions
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {

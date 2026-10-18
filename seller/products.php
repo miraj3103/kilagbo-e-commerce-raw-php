@@ -135,6 +135,7 @@ require_once 'includes/header.php';
                     <th>ক্যাটেগরি</th>
                     <th>দাম</th>
                     <th>ন্যূনতম অর্ডার</th>
+                    <th>পাইকারি সেকশন</th>
                     <th>স্ট্যাটাস</th>
                     <th>তারিখ</th>
                     <th>অ্যাকশন</th>
@@ -164,6 +165,19 @@ require_once 'includes/header.php';
                     <td><strong><?php echo formatPrice($product['seller_price']); ?></strong></td>
                     <td><?php echo $product['minimum_quantity']; ?> পিস</td>
                     <td>
+                        <?php if ($product['wholesale_price'] !== null && (float)$product['wholesale_price'] > 0): ?>
+                            <strong><?php echo formatPrice($product['wholesale_price']); ?></strong>
+                            <br><small class="text-muted">Min <?php echo intval($product['wholesale_min_qty'] ?: 1); ?></small>
+                            <?php if (!empty($product['wholesale_added'])): ?>
+                                <br><span class="badge bg-success-subtle text-success mt-1">প্রকাশিত</span>
+                            <?php else: ?>
+                                <br><span class="badge bg-warning-subtle text-warning-emphasis mt-1">রিভিউ অপেক্ষমাণ</span>
+                            <?php endif; ?>
+                        <?php else: ?>
+                            <span class="text-muted">-</span>
+                        <?php endif; ?>
+                    </td>
+                    <td>
                         <?php if ($product['status'] == 'pending'): ?>
                         <span class="badge badge-pending">পেন্ডিং</span>
                         <?php elseif ($product['status'] == 'approved'): ?>
@@ -179,6 +193,12 @@ require_once 'includes/header.php';
                                 <i class="bi bi-three-dots"></i>
                             </button>
                             <ul class="dropdown-menu dropdown-menu-end">
+                                <li>
+                                    <a class="dropdown-item" href="<?php echo baseUrl('seller/edit-product.php?id=' . $product['id']); ?>">
+                                        <i class="bi bi-pencil-square me-2"></i>এডিট করুন
+                                    </a>
+                                </li>
+                                <li><hr class="dropdown-divider"></li>
                                 <li>
                                     <a class="dropdown-item text-danger" href="<?php echo baseUrl('seller/products.php?delete=' . $product['id']); ?>" onclick="return confirm('আপনি কি এই পণ্য মুছে ফেলতে চান? এটি সকল সেকশন থেকে মুছে যাবে।');">
                                         <i class="bi bi-trash me-2"></i>মুছুন

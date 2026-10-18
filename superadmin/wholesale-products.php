@@ -9,6 +9,8 @@ $currentPage = 'wholesale-products';
 
 require_once __DIR__ . '/../config/config.php';
 requireAdmin();
+require_once __DIR__ . '/includes/rbac.php';
+requireAdminPermissionForCurrentPage();
 
 // Check if wholesale_products table exists
 $wholesaleTableExists = false;

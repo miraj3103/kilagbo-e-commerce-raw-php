@@ -6,6 +6,8 @@
 
 $currentPage = 'resell-orders';
 require_once 'includes/header.php';
+require_once __DIR__ . '/../includes/steadfast.php';
+require_once __DIR__ . '/../includes/resell-shortfall.php';
 
 $pageTitle = 'রিসেল অর্ডার';
 
@@ -14,50 +16,13 @@ if (isset($_POST['update_status'])) {
     $orderId = intval($_POST['order_id']);
     $newStatus = sanitize($_POST['status']);
 
-    // Get current order status before update
-    $stmt = $pdo->prepare("SELECT * FROM resell_orders WHERE id = ?");
-    $stmt->execute([$orderId]);
-    $currentOrder = $stmt->fetch();
-
-    if ($currentOrder) {
-        $oldStatus = $currentOrder['status'];
-
-        // Update the status
-        $pdo->prepare("UPDATE resell_orders SET status = ?, updated_at = NOW() WHERE id = ?")->execute([$newStatus, $orderId]);
-
-        // Handle profit crediting/deducting based on status changes
-        if ($newStatus === 'delivered' && !$currentOrder['profit_credited']) {
-            // Status changed to delivered and profit not yet credited - add profit
-            addResellerBalance($currentOrder['reseller_id'], $currentOrder['profit'], "অর্ডার #" . $currentOrder['order_number'] . " থেকে প্রফিট", 'order', $orderId);
-            $pdo->prepare("UPDATE resell_orders SET profit_credited = 1, delivered_at = NOW() WHERE id = ?")->execute([$orderId]);
-        } elseif ($newStatus !== 'delivered' && $currentOrder['profit_credited']) {
-            // Status changed to non-delivered and profit was previously credited - deduct profit
-            deductResellerBalance($currentOrder['reseller_id'], $currentOrder['profit'], "অর্ডার #" . $currentOrder['order_number'] . " স্ট্যাটাস পরিবর্তন - প্রফিট ফেরত", 'order', $orderId);
-            $pdo->prepare("UPDATE resell_orders SET profit_credited = 0, delivered_at = NULL WHERE id = ?")->execute([$orderId]);
-        }
-
-        // --- Handle Delivery Charge Deduction for Return ---
-        // We use a flag 'is_return_deducted' to prevent double deduction if status toggles
-        try {
-            $pdo->query("SELECT is_return_deducted FROM resell_orders LIMIT 1");
-        } catch (PDOException $e) {
-            $pdo->exec("ALTER TABLE resell_orders ADD COLUMN is_return_deducted TINYINT(1) DEFAULT 0");
-        }
-
-        if ($newStatus === 'returned' && !$currentOrder['is_return_deducted']) {
-            // Deduct delivery charge from reseller
-            deductResellerBalance($currentOrder['reseller_id'], $currentOrder['delivery_charge'], "অর্ডার #" . $currentOrder['order_number'] . " রিটার্ন - ডেলিভারি চার্জ কর্তন", 'order', $orderId);
-            $pdo->prepare("UPDATE resell_orders SET is_return_deducted = 1 WHERE id = ?")->execute([$orderId]);
-        } elseif ($newStatus !== 'returned' && $currentOrder['is_return_deducted']) {
-            // If it was returned but now changed back to something else, we should ideally refund the charge
-            // but for safety/policy it might stay deducted. User requested deduction "when marked to return".
-            // Let's implement reversal for fairness if status changes back before completion.
-            addResellerBalance($currentOrder['reseller_id'], $currentOrder['delivery_charge'], "অর্ডার #" . $currentOrder['order_number'] . " স্ট্যাটাস পরিবর্তন - ডেলিভারি চার্জ রিফান্ড", 'order', $orderId);
-            $pdo->prepare("UPDATE resell_orders SET is_return_deducted = 0 WHERE id = ?")->execute([$orderId]);
-        }
+    try {
+        resellApplyOrderStatusFinancials($pdo, $orderId, $newStatus);
+        setFlash('success', 'অর্ডার স্ট্যাটাস আপডেট হয়েছে');
+    } catch (Throwable $e) {
+        setFlash('error', $e->getMessage());
     }
 
-    setFlash('success', 'অর্ডার স্ট্যাটাস আপডেট হয়েছে');
     redirect(adminUrl('resell-orders.php'));
 }
 
@@ -75,63 +40,26 @@ if (isset($_POST['bulk_delete']) && isset($_POST['selected_orders'])) {
     }
 }
 
+// Handle bulk courier actions
+if (isset($_POST['bulk_send_steadfast'])) {
+    $selectedIds = array_map('intval', $_POST['selected_orders'] ?? []);
+    $result = steadfastSendOrders($pdo, steadfastRefsFromIds('resell', $selectedIds));
+    steadfastFlashSendResult($result);
+    redirect(adminUrl('resell-orders.php'));
+}
+
+if (isset($_POST['bulk_sync_steadfast'])) {
+    $selectedIds = array_map('intval', $_POST['selected_orders'] ?? []);
+    $result = steadfastSyncOrders($pdo, steadfastRefsFromIds('resell', $selectedIds), true);
+    steadfastFlashSyncResult($result);
+    redirect(adminUrl('resell-orders.php'));
+}
+
 // Handle send to steadfast action
 if (isset($_POST['send_to_steadfast'])) {
     $orderId = intval($_POST['order_id']);
-    
-    // Get order details
-    $stmt = $pdo->prepare("SELECT * FROM resell_orders WHERE id = ?");
-    $stmt->execute([$orderId]);
-    $order = $stmt->fetch();
-    
-    if ($order) {
-        $apiKey = getSettings('steadfast_api_key');
-        $secretKey = getSettings('steadfast_secret_key');
-        $isActive = getSettings('steadfast_active');
-        
-        if ($isActive && $apiKey && $secretKey) {
-            // Prepare data for Steadfast
-            $data = [
-                'invoice' => $order['order_number'],
-                'recipient_name' => $order['customer_name'],
-                'recipient_phone' => $order['customer_phone'],
-                'recipient_address' => $order['shipping_address'] ?? '',
-                'cod_amount' => $order['total_amount'],
-                'note' => $order['notes'] ?? ''
-            ];
-            
-            $ch = curl_init();
-            curl_setopt($ch, CURLOPT_URL, STEADFAST_BASE_URL . '/create_order');
-            curl_setopt($ch, CURLOPT_POST, true);
-            curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($data));
-            curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-            curl_setopt($ch, CURLOPT_HTTPHEADER, [
-                'Content-Type: application/json',
-                'Api-Key: ' . $apiKey,
-                'Secret-Key: ' . $secretKey
-            ]);
-            
-            $response = curl_exec($ch);
-            $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-            curl_close($ch);
-            
-            $result = json_decode($response, true);
-            
-            if ($httpCode == 200 && isset($result['consignment']['consignment_id'])) {
-                $consignmentId = $result['consignment']['consignment_id'];
-                $trackingCode = $result['consignment']['tracking_code'] ?? '';
-                
-                $pdo->prepare("UPDATE resell_orders SET steadfast_consignment_id = ?, steadfast_tracking_code = ?, status = 'processing', updated_at = NOW() WHERE id = ?")
-                    ->execute([$consignmentId, $trackingCode, $orderId]);
-                
-                setFlash('success', 'অর্ডার সফলভাবে Steadfast এ পাঠানো হয়েছে');
-            } else {
-                setFlash('error', 'Steadfast এ পাঠাতে সমস্যা হয়েছে: ' . ($result['message'] ?? 'Unknown error'));
-            }
-        } else {
-            setFlash('error', 'Steadfast কুরিয়ার সেটআপ করা হয়নি বা সক্রিয় নেই');
-        }
-    }
+    $result = steadfastSendOrders($pdo, [['type' => 'resell', 'id' => $orderId]], true);
+    steadfastFlashSendResult($result);
     redirect(adminUrl('resell-orders.php'));
 }
 
@@ -139,7 +67,7 @@ if (isset($_POST['send_to_steadfast'])) {
 if (isset($_POST['send_tracking_link'])) {
     $orderId = intval($_POST['order_id']);
     $trackingLink = sanitize($_POST['tracking_link'] ?? '');
-    
+
     if ($orderId && $trackingLink) {
         // Check if tracking_link column exists, if not add it
         try {
@@ -147,15 +75,15 @@ if (isset($_POST['send_tracking_link'])) {
         } catch (PDOException $e) {
             $pdo->exec("ALTER TABLE resell_orders ADD COLUMN tracking_link VARCHAR(500) DEFAULT NULL");
         }
-        
+
         // Update the tracking link
         $pdo->prepare("UPDATE resell_orders SET tracking_link = ?, updated_at = NOW() WHERE id = ?")->execute([$trackingLink, $orderId]);
-        
+
         // Get order details for notification
         $orderStmt = $pdo->prepare("SELECT order_number, reseller_id FROM resell_orders WHERE id = ?");
         $orderStmt->execute([$orderId]);
         $orderData = $orderStmt->fetch();
-        
+
         if ($orderData) {
             // Create notification for reseller
             try {
@@ -165,13 +93,16 @@ if (isset($_POST['send_tracking_link'])) {
                 // Notification table might not exist or have different structure, ignore
             }
         }
-        
+
         setFlash('success', 'ট্র্যাকিং লিংক সফলভাবে পাঠানো হয়েছে');
     } else {
         setFlash('error', 'ট্র্যাকিং লিংক প্রদান করুন');
     }
     redirect(adminUrl('resell-orders.php'));
 }
+
+// Refresh recent courier statuses on page load (2-minute per-order throttle).
+steadfastAutoSyncRecent($pdo, 'resell', 20);
 
 // Get filters
 $status = sanitize($_GET['status'] ?? '');
@@ -193,10 +124,10 @@ if ($search) {
 }
 
 $stmt = $pdo->prepare("
-    SELECT ro.*, r.name as reseller_name 
-    FROM resell_orders ro 
-    LEFT JOIN resellers r ON ro.reseller_id = r.id 
-    $where 
+    SELECT ro.*, r.name as reseller_name
+    FROM resell_orders ro
+    LEFT JOIN resellers r ON ro.reseller_id = r.id
+    $where
     ORDER BY ro.created_at DESC
 ");
 $stmt->execute($params);
@@ -205,7 +136,7 @@ $orders = $stmt->fetchAll();
 $steadfastActive = getSettings('steadfast_active') == 1 && getSettings('steadfast_api_key');
 
 // Stats - only count delivered orders
-$stats = $pdo->query("SELECT 
+$stats = $pdo->query("SELECT
     COUNT(*) as total,
     SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) as pending,
     SUM(CASE WHEN status = 'delivered' THEN 1 ELSE 0 END) as delivered,
@@ -218,9 +149,9 @@ $stats = $pdo->query("SELECT
     <div class="d-flex justify-content-between align-items-center mb-4">
         <h4><i class="bi bi-bag-check me-2"></i>রিসেল অর্ডার</h4>
     </div>
-    
+
     <?php showFlash(); ?>
-    
+
     <div class="row g-3 mb-4">
         <div class="col-md-3">
             <div class="card bg-primary text-white">
@@ -257,7 +188,7 @@ $stats = $pdo->query("SELECT
             </div>
         </div>
     </div>
-    
+
     <div class="card">
         <div class="card-header">
             <form method="GET" class="row g-3">
@@ -282,9 +213,19 @@ $stats = $pdo->query("SELECT
         </div>
         <div class="card-header d-flex justify-content-between align-items-center">
             <span>অর্ডার তালিকা</span>
-            <button type="button" class="btn btn-danger btn-sm" id="bulkDeleteBtn" style="display: none;" data-bs-toggle="modal" data-bs-target="#bulkDeleteModal">
-                <i class="bi bi-trash"></i> বাল্ক ডিলিট (<span id="selectedCount">0</span>)
-            </button>
+            <div class="d-flex gap-2 flex-wrap">
+                <?php if ($steadfastActive): ?>
+                <button type="button" class="btn btn-success btn-sm courierBulkBtn" style="display:none;" onclick="submitSelectedCourier('bulk_send_steadfast')">
+                    <i class="bi bi-send me-1"></i>কুরিয়ারে পাঠান (<span class="selectedCourierCount">0</span>)
+                </button>
+                <button type="button" class="btn btn-outline-primary btn-sm courierBulkBtn" style="display:none;" onclick="submitSelectedCourier('bulk_sync_steadfast')">
+                    <i class="bi bi-arrow-repeat me-1"></i>স্ট্যাটাস Sync
+                </button>
+                <?php endif; ?>
+                <button type="button" class="btn btn-danger btn-sm" id="bulkDeleteBtn" style="display: none;" data-bs-toggle="modal" data-bs-target="#bulkDeleteModal">
+                    <i class="bi bi-trash"></i> বাল্ক ডিলিট (<span id="selectedCount">0</span>)
+                </button>
+            </div>
         </div>
         <div class="card-body">
             <?php if (empty($orders)): ?>
@@ -329,11 +270,13 @@ $stats = $pdo->query("SELECT
                                 <td><?php echo formatPrice($order['original_price'] + $order['delivery_charge']); ?></td>
                                 <td><?php echo formatPrice($order['reseller_price']); ?></td>
                                 <td>
-                                    <?php 
+                                    <?php
                                     $isCancelled = in_array($order['status'], ['cancelled', 'returned', 'rejected', 'failed']);
                                     $isDelivered = $order['status'] === 'delivered';
+                                    $profitValue = (float)$order['profit'];
+                                    $profitClass = $isCancelled ? 'text-muted' : ($profitValue < 0 ? 'text-danger' : (($isDelivered && $profitValue > 0) ? 'text-success' : 'text-dark'));
                                     ?>
-                                    <span class="<?php echo $isDelivered ? 'text-success' : ($isCancelled ? 'text-muted' : 'text-dark'); ?>" style="<?php echo $isCancelled ? 'text-decoration: line-through;' : ''; ?>">
+                                    <span class="<?php echo $profitClass; ?>" style="<?php echo $isCancelled ? 'text-decoration: line-through;' : ''; ?>">
                                         <?php echo formatPrice($order['profit']); ?>
                                         <?php if ($isDelivered): ?>
                                         <i class="bi bi-check-circle-fill"></i>
@@ -355,6 +298,12 @@ $stats = $pdo->query("SELECT
                                         </select>
                                         <input type="hidden" name="update_status" value="1">
                                     </form>
+                                    <?php if (!empty($order['courier_status'])): ?>
+                                    <span class="badge bg-light text-dark border mt-1"><i class="bi bi-truck me-1"></i><?php echo steadfastCourierStatusLabel($order['courier_status']); ?></span>
+                                    <?php endif; ?>
+                                    <?php if (!empty($order['steadfast_tracking_code'])): ?>
+                                    <small class="d-block text-muted mt-1"><?php echo sanitize($order['steadfast_tracking_code']); ?></small>
+                                    <?php endif; ?>
                                 </td>
                                 <td><?php echo date('d M Y', strtotime($order['created_at'])); ?></td>
                                 <td>
@@ -362,15 +311,15 @@ $stats = $pdo->query("SELECT
                                         <a href="<?php echo adminUrl('resell-order-view/' . $order['id']); ?>" class="btn btn-sm btn-outline-primary" title="বিস্তারিত দেখুন">
                                             <i class="bi bi-eye"></i>
                                         </a>
-                                        <?php 
+                                        <?php
                                         $hasTrackingLink = !empty($order['tracking_link'] ?? '');
                                         ?>
-                                        <button type="button" class="btn btn-sm <?php echo $hasTrackingLink ? 'btn-success' : 'btn-outline-secondary'; ?>" 
-                                                onclick="openTrackingModal(<?php echo $order['id']; ?>, '<?php echo addslashes($order['tracking_link'] ?? ''); ?>')" 
+                                        <button type="button" class="btn btn-sm <?php echo $hasTrackingLink ? 'btn-success' : 'btn-outline-secondary'; ?>"
+                                                onclick="openTrackingModal(<?php echo $order['id']; ?>, '<?php echo addslashes($order['tracking_link'] ?? ''); ?>')"
                                                 title="<?php echo $hasTrackingLink ? 'ট্র্যাকিং লিংক পাঠানো হয়েছে' : 'ট্র্যাকিং লিংক পাঠান'; ?>">
                                             <i class="bi bi-link-45deg"></i>
                                         </button>
-                                        
+
                                         <?php if ($steadfastActive && $order['status'] != 'cancelled'): ?>
                                         <form method="POST" class="d-inline ms-1">
                                             <input type="hidden" name="order_id" value="<?php echo $order['id']; ?>">
@@ -421,7 +370,7 @@ $stats = $pdo->query("SELECT
             </div>
         </div>
     </div>
-    
+
     <!-- Tracking Link Modal -->
     <div class="modal fade" id="trackingLinkModal" tabindex="-1">
         <div class="modal-dialog">
@@ -436,7 +385,7 @@ $stats = $pdo->query("SELECT
                     <div class="modal-body">
                         <div class="mb-3">
                             <label class="form-label">Steadfast ট্র্যাকিং লিংক *</label>
-                            <input type="url" class="form-control" name="tracking_link" id="trackingLinkInput" 
+                            <input type="url" class="form-control" name="tracking_link" id="trackingLinkInput"
                                    placeholder="https://steadfast.com.bd/tracking/..." required>
                             <small class="text-muted">এখানে Steadfast এর ট্র্যাকিং URL দিন</small>
                         </div>
@@ -456,18 +405,20 @@ document.addEventListener('DOMContentLoaded', function() {
     const selectAllCheckbox = document.getElementById('selectAll');
     const orderCheckboxes = document.querySelectorAll('.order-checkbox');
     const bulkDeleteBtn = document.getElementById('bulkDeleteBtn');
-    
+
     function updateCount() {
         const count = document.querySelectorAll('.order-checkbox:checked').length;
         document.getElementById('selectedCount').textContent = count;
+        document.querySelectorAll('.selectedCourierCount').forEach(el => el.textContent = count);
         bulkDeleteBtn.style.display = count > 0 ? 'inline-block' : 'none';
+        document.querySelectorAll('.courierBulkBtn').forEach(btn => btn.style.display = count > 0 ? 'inline-block' : 'none');
     }
-    
+
     selectAllCheckbox?.addEventListener('change', function() {
         orderCheckboxes.forEach(cb => cb.checked = this.checked);
         updateCount();
     });
-    
+
     orderCheckboxes.forEach(cb => {
         cb.addEventListener('change', function() {
             updateCount();
@@ -476,7 +427,7 @@ document.addEventListener('DOMContentLoaded', function() {
             selectAllCheckbox.indeterminate = checkedCount > 0 && checkedCount < orderCheckboxes.length;
         });
     });
-    
+
     bulkDeleteBtn?.addEventListener('click', function() {
         const form = document.getElementById('bulkDeleteForm');
         document.querySelectorAll('.order-checkbox:checked').forEach(cb => {
@@ -488,6 +439,26 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     });
 });
+
+function submitSelectedCourier(action) {
+    const checked = document.querySelectorAll('.order-checkbox:checked');
+    if (checked.length === 0) return;
+    const verb = action === 'bulk_send_steadfast' ? 'Steadfast এ পাঠাতে' : 'courier status sync করতে';
+    if (!confirm(checked.length + ' টি অর্ডার ' + verb + ' চান?')) return;
+    const form = document.createElement('form');
+    form.method = 'POST';
+    form.style.display = 'none';
+    const actionInput = document.createElement('input');
+    actionInput.type = 'hidden'; actionInput.name = action; actionInput.value = '1';
+    form.appendChild(actionInput);
+    checked.forEach(cb => {
+        const input = document.createElement('input');
+        input.type = 'hidden'; input.name = 'selected_orders[]'; input.value = cb.value;
+        form.appendChild(input);
+    });
+    document.body.appendChild(form);
+    form.submit();
+}
 
 // Open tracking link modal
 function openTrackingModal(orderId, existingLink) {

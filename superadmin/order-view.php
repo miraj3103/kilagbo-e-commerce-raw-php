@@ -8,6 +8,9 @@ $currentPage = 'orders';
 
 require_once '../config/config.php';
 requireAdmin();
+require_once __DIR__ . '/includes/rbac.php';
+requireAdminPermissionForCurrentPage();
+require_once __DIR__ . '/../includes/steadfast.php';
 
 $id = intval($_GET['id'] ?? 0);
 if (!$id) {
@@ -34,81 +37,45 @@ $items = $itemsStmt->fetchAll();
 // Handle status update
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = $_POST['action'] ?? '';
-    
+
     if ($action === 'update_status') {
         $status = sanitize($_POST['status']);
         $pdo->prepare("UPDATE orders SET status = ? WHERE id = ?")->execute([$status, $id]);
         setFlash('success', 'অর্ডার স্ট্যাটাস আপডেট হয়েছে');
         redirect(adminUrl('orders/view/' . $id));
     }
-    
+
     if ($action === 'add_note') {
         $notes = sanitize($_POST['notes']);
         $pdo->prepare("UPDATE orders SET notes = ? WHERE id = ?")->execute([$notes, $id]);
         setFlash('success', 'নোট সেভ হয়েছে');
         redirect(adminUrl('orders/view/' . $id));
     }
-    
+
     if ($action === 'update_customer') {
         $customerName = sanitize($_POST['customer_name']);
         $customerPhone = sanitize($_POST['customer_phone']);
         $customerAddress = sanitize($_POST['customer_address']);
         $deliveryArea = sanitize($_POST['delivery_area']);
-        
+
         $pdo->prepare("UPDATE orders SET customer_name = ?, customer_phone = ?, customer_address = ?, delivery_area = ? WHERE id = ?")
             ->execute([$customerName, $customerPhone, $customerAddress, $deliveryArea, $id]);
         setFlash('success', 'কাস্টমার তথ্য আপডেট হয়েছে');
         redirect(adminUrl('orders/view/' . $id));
     }
-    
+
     if ($action === 'send_to_steadfast') {
-        $apiKey = getSettings('steadfast_api_key');
-        $secretKey = getSettings('steadfast_secret_key');
-        $isActive = getSettings('steadfast_active');
-        
-        if ($isActive && $apiKey && $secretKey) {
-            $data = [
-                'invoice' => $order['order_number'],
-                'recipient_name' => $order['customer_name'],
-                'recipient_phone' => $order['customer_phone'],
-                'recipient_address' => $order['customer_address'],
-                'cod_amount' => $order['total'],
-                'note' => $order['notes'] ?? ''
-            ];
-            
-            $ch = curl_init();
-            curl_setopt($ch, CURLOPT_URL, STEADFAST_BASE_URL . '/create_order');
-            curl_setopt($ch, CURLOPT_POST, true);
-            curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($data));
-            curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-            curl_setopt($ch, CURLOPT_HTTPHEADER, [
-                'Content-Type: application/json',
-                'Api-Key: ' . $apiKey,
-                'Secret-Key: ' . $secretKey
-            ]);
-            
-            $response = curl_exec($ch);
-            $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-            curl_close($ch);
-            
-            $result = json_decode($response, true);
-            
-            if ($httpCode == 200 && isset($result['consignment']['consignment_id'])) {
-                $consignmentId = $result['consignment']['consignment_id'];
-                $trackingCode = $result['consignment']['tracking_code'] ?? '';
-                
-                $pdo->prepare("UPDATE orders SET steadfast_consignment_id = ?, steadfast_tracking_code = ?, status = 'processing' WHERE id = ?")
-                    ->execute([$consignmentId, $trackingCode, $id]);
-                
-                setFlash('success', 'অর্ডার সফলভাবে Steadfast এ পাঠানো হয়েছে। ট্র্যাকিং কোড: ' . $trackingCode);
-            } else {
-                setFlash('error', 'Steadfast এ পাঠাতে সমস্যা হয়েছে: ' . ($result['message'] ?? 'Unknown error'));
-            }
-        } else {
-            setFlash('error', 'Steadfast কুরিয়ার সেটআপ করা হয়নি বা সক্রিয় নেই');
-        }
+        $result = steadfastSendOrders($pdo, [['type' => 'retail', 'id' => $id]], true);
+        steadfastFlashSendResult($result);
         redirect(adminUrl('orders/view/' . $id));
     }
+}
+
+if (!empty($order['steadfast_consignment_id'])) {
+    steadfastSyncOrder($pdo, 'retail', $id, false);
+    $stmt = $pdo->prepare("SELECT * FROM orders WHERE id = ?");
+    $stmt->execute([$id]);
+    $order = $stmt->fetch();
 }
 
 $statusLabels = [
@@ -135,7 +102,7 @@ require_once 'includes/header.php';
         <!-- Order Items -->
         <div class="admin-card">
             <h5 class="card-title">অর্ডারকৃত পণ্য</h5>
-            
+
             <div class="table-responsive">
                 <table class="admin-table">
                     <thead>
@@ -155,7 +122,7 @@ require_once 'includes/header.php';
                             </td>
                             <td>
                                 <?php echo sanitize($item['product_name']); ?>
-                                <?php 
+                                <?php
                                 $variation = json_decode($item['variation'], true);
                                 if (json_last_error() === JSON_ERROR_NONE && is_array($variation)):
                                     foreach ($variation as $key => $value):
@@ -164,7 +131,7 @@ require_once 'includes/header.php';
                                         // The user's JSON had "\u0995\u09be\u09b2\u09be\u09b0".
                                         echo '<br><small class="text-muted">' . ucfirst($key) . ': ' . sanitize($value) . '</small>';
                                     endforeach;
-                                elseif ($item['variation']): 
+                                elseif ($item['variation']):
                                 ?>
                                 <br><small class="text-muted"><?php echo sanitize($item['variation']); ?></small>
                                 <?php endif; ?>
@@ -182,7 +149,7 @@ require_once 'includes/header.php';
                         </tr>
                         <tr>
                             <td colspan="4" class="text-end">
-                                ডেলিভারি চার্জ 
+                                ডেলিভারি চার্জ
                                 (<?php echo $order['delivery_area'] == 'inside_dhaka' ? $insideDhakaLabel : $outsideDhakaLabel; ?>):
                             </td>
                             <td><strong><?php echo formatPrice($order['delivery_charge']); ?></strong></td>
@@ -195,7 +162,7 @@ require_once 'includes/header.php';
                 </table>
             </div>
         </div>
-        
+
         <!-- Order Notes -->
         <div class="admin-card">
             <h5 class="card-title">নোট</h5>
@@ -208,32 +175,32 @@ require_once 'includes/header.php';
             </form>
         </div>
     </div>
-    
+
     <div class="col-lg-4">
         <!-- Order Info -->
         <div class="admin-card">
             <h5 class="card-title">অর্ডার তথ্য</h5>
-            
+
             <div class="mb-3">
                 <strong>অর্ডার নং:</strong><br>
                 <span class="text-primary"><?php echo $order['order_number']; ?></span>
             </div>
-            
+
             <div class="mb-3">
                 <strong>তারিখ:</strong><br>
                 <?php echo date('d M Y, h:i A', strtotime($order['created_at'])); ?>
             </div>
-            
+
             <div class="mb-3">
                 <strong>স্ট্যাটাস:</strong><br>
                 <span class="badge <?php echo $statusLabels[$order['status']]['class']; ?>">
                     <?php echo $statusLabels[$order['status']]['label']; ?>
                 </span>
             </div>
-            
+
             <div class="mb-3">
                 <strong>পেমেন্ট মেথড:</strong><br>
-                <?php 
+                <?php
                 if ($order['payment_method'] == 'online') {
                     echo '<span class="text-success">অনলাইন পেমেন্ট</span>';
                     if (!empty($order['payment_type'])) {
@@ -250,16 +217,16 @@ require_once 'includes/header.php';
                 }
                 ?>
             </div>
-            
+
             <?php if ($order['steadfast_tracking_code']): ?>
             <div class="mb-3">
                 <strong>ট্র্যাকিং কোড:</strong><br>
                 <code><?php echo $order['steadfast_tracking_code']; ?></code>
             </div>
             <?php endif; ?>
-            
+
             <hr>
-            
+
             <form method="POST">
                 <input type="hidden" name="action" value="update_status">
                 <div class="mb-3">
@@ -277,7 +244,7 @@ require_once 'includes/header.php';
                 </button>
             </form>
         </div>
-        
+
         <!-- Customer Info (Editable) -->
         <div class="admin-card">
             <h5 class="card-title">
@@ -286,30 +253,30 @@ require_once 'includes/header.php';
                     <i class="bi bi-pencil"></i> এডিট
                 </button>
             </h5>
-            
+
             <!-- View Mode -->
             <div id="customerView">
                 <div class="mb-3">
                     <strong><i class="bi bi-person me-2"></i>নাম:</strong><br>
                     <?php echo sanitize($order['customer_name']); ?>
                 </div>
-                
+
                 <div class="mb-3">
                     <strong><i class="bi bi-telephone me-2"></i>ফোন:</strong><br>
                     <a href="tel:<?php echo $order['customer_phone']; ?>"><?php echo sanitize($order['customer_phone']); ?></a>
                 </div>
-                
+
                 <div class="mb-3">
                     <strong><i class="bi bi-geo-alt me-2"></i>ঠিকানা:</strong><br>
                     <?php echo nl2br(sanitize($order['customer_address'])); ?>
                 </div>
-                
+
                 <div class="mb-0">
                     <strong><i class="bi bi-truck me-2"></i>ডেলিভারি এরিয়া:</strong><br>
                     <?php echo $order['delivery_area'] == 'inside_dhaka' ? 'ঢাকার ভেতরে' : 'ঢাকার বাহিরে'; ?>
                 </div>
             </div>
-            
+
             <!-- Edit Mode -->
             <form method="POST" id="customerEditForm" style="display: none;">
                 <input type="hidden" name="action" value="update_customer">
@@ -342,10 +309,10 @@ require_once 'includes/header.php';
                 </div>
             </form>
         </div>
-        
-        <?php 
+
+        <?php
         $steadfastActive = getSettings('steadfast_active') == 1 && getSettings('steadfast_api_key');
-        if ($steadfastActive && $order['status'] != 'cancelled'): 
+        if ($steadfastActive && $order['status'] != 'cancelled'):
         ?>
         <!-- Steadfast Send -->
         <div class="admin-card">
@@ -356,6 +323,9 @@ require_once 'includes/header.php';
             <?php if ($order['steadfast_consignment_id']): ?>
             <div class="alert alert-success mb-3">
                 <i class="bi bi-check-circle me-2"></i>ইতিমধ্যে পাঠানো হয়েছে
+                <?php if (!empty($order['courier_status'])): ?>
+                <br><small>Courier status: <strong><?php echo steadfastCourierStatusLabel($order['courier_status']); ?></strong></small>
+                <?php endif; ?>
                 <?php if ($order['steadfast_tracking_code']): ?>
                 <br><small>ট্র্যাকিং: <code><?php echo $order['steadfast_tracking_code']; ?></code></small>
                 <?php endif; ?>
@@ -377,7 +347,7 @@ require_once 'includes/header.php';
             <?php endif; ?>
         </div>
         <?php endif; ?>
-        
+
         <!-- Print -->
         <div class="d-grid">
             <button onclick="window.print()" class="btn btn-admin-outline">
@@ -402,7 +372,7 @@ require_once 'includes/header.php';
 function toggleCustomerEdit() {
     const viewDiv = document.getElementById('customerView');
     const editForm = document.getElementById('customerEditForm');
-    
+
     if (viewDiv.style.display === 'none') {
         viewDiv.style.display = 'block';
         editForm.style.display = 'none';

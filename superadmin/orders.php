@@ -9,11 +9,14 @@ $currentPage = 'orders';
 
 require_once __DIR__ . '/../config/config.php';
 requireAdmin();
+require_once __DIR__ . '/includes/rbac.php';
+requireAdminPermissionForCurrentPage();
+require_once __DIR__ . '/../includes/steadfast.php';
 
 // Handle actions
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = $_POST['action'] ?? '';
-    
+
     if ($action === 'update_status') {
         $orderId = intval($_POST['order_id']);
         $status = sanitize($_POST['status']);
@@ -21,7 +24,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         setFlash('success', 'অর্ডার স্ট্যাটাস আপডেট হয়েছে');
         redirect(adminUrl('orders'));
     }
-    
+
     if ($action === 'bulk_delete') {
         $orderIds = $_POST['order_ids'] ?? [];
         if (!empty($orderIds)) {
@@ -34,66 +37,31 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
         redirect(adminUrl('orders'));
     }
-    
+
+    if ($action === 'bulk_send_steadfast') {
+        $orderIds = array_map('intval', $_POST['order_ids'] ?? []);
+        $result = steadfastSendOrders($pdo, steadfastRefsFromIds('retail', $orderIds));
+        steadfastFlashSendResult($result);
+        redirect(adminUrl('orders'));
+    }
+
+    if ($action === 'bulk_sync_steadfast') {
+        $orderIds = array_map('intval', $_POST['order_ids'] ?? []);
+        $result = steadfastSyncOrders($pdo, steadfastRefsFromIds('retail', $orderIds), true);
+        steadfastFlashSyncResult($result);
+        redirect(adminUrl('orders'));
+    }
+
     if ($action === 'send_to_steadfast') {
         $orderId = intval($_POST['order_id']);
-        
-        // Get order details
-        $orderStmt = $pdo->prepare("SELECT * FROM orders WHERE id = ?");
-        $orderStmt->execute([$orderId]);
-        $order = $orderStmt->fetch();
-        
-        if ($order) {
-            $apiKey = getSettings('steadfast_api_key');
-            $secretKey = getSettings('steadfast_secret_key');
-            $isActive = getSettings('steadfast_active');
-            
-            if ($isActive && $apiKey && $secretKey) {
-                // Prepare data for Steadfast
-                $data = [
-                    'invoice' => $order['order_number'],
-                    'recipient_name' => $order['customer_name'],
-                    'recipient_phone' => $order['customer_phone'],
-                    'recipient_address' => $order['customer_address'],
-                    'cod_amount' => $order['total'],
-                    'note' => $order['notes'] ?? ''
-                ];
-                
-                $ch = curl_init();
-                curl_setopt($ch, CURLOPT_URL, STEADFAST_BASE_URL . '/create_order');
-                curl_setopt($ch, CURLOPT_POST, true);
-                curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($data));
-                curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-                curl_setopt($ch, CURLOPT_HTTPHEADER, [
-                    'Content-Type: application/json',
-                    'Api-Key: ' . $apiKey,
-                    'Secret-Key: ' . $secretKey
-                ]);
-                
-                $response = curl_exec($ch);
-                $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-                curl_close($ch);
-                
-                $result = json_decode($response, true);
-                
-                if ($httpCode == 200 && isset($result['consignment']['consignment_id'])) {
-                    $consignmentId = $result['consignment']['consignment_id'];
-                    $trackingCode = $result['consignment']['tracking_code'] ?? '';
-                    
-                    $pdo->prepare("UPDATE orders SET steadfast_consignment_id = ?, steadfast_tracking_code = ?, status = 'processing' WHERE id = ?")
-                        ->execute([$consignmentId, $trackingCode, $orderId]);
-                    
-                    setFlash('success', 'অর্ডার সফলভাবে Steadfast এ পাঠানো হয়েছে');
-                } else {
-                    setFlash('error', 'Steadfast এ পাঠাতে সমস্যা হয়েছে: ' . ($result['message'] ?? 'Unknown error'));
-                }
-            } else {
-                setFlash('error', 'Steadfast কুরিয়ার সেটআপ করা হয়নি বা সক্রিয় নেই');
-            }
-        }
+        $result = steadfastSendOrders($pdo, [['type' => 'retail', 'id' => $orderId]], true);
+        steadfastFlashSendResult($result);
         redirect(adminUrl('orders'));
     }
 }
+
+// Refresh recent courier statuses on page load (2-minute per-order throttle).
+steadfastAutoSyncRecent($pdo, 'retail', 20);
 
 // Pagination and filters
 $page = isset($_GET['page']) ? max(1, intval($_GET['page'])) : 1;
@@ -172,14 +140,24 @@ require_once 'includes/header.php';
         </div>
         <?php endif; ?>
     </form>
-    
-    <div class="d-flex justify-content-between align-items-center mb-3">
+
+    <div class="d-flex justify-content-between align-items-center mb-3 gap-2 flex-wrap">
         <h5 class="card-title mb-0">অর্ডার তালিকা (<?php echo $totalOrders; ?>)</h5>
-        <button type="button" class="btn btn-danger btn-sm" id="bulkDeleteBtn" style="display: none;" onclick="bulkDelete()">
-            <i class="bi bi-trash me-1"></i>নির্বাচিত মুছুন (<span id="selectedCount">0</span>)
-        </button>
+        <div id="bulkActionButtons" class="d-flex gap-2 flex-wrap" style="display: none !important;">
+            <?php if ($steadfastActive): ?>
+            <button type="button" class="btn btn-success btn-sm" onclick="submitBulkCourier('bulk_send_steadfast')">
+                <i class="bi bi-send me-1"></i>কুরিয়ারে পাঠান (<span class="selectedCountText">0</span>)
+            </button>
+            <button type="button" class="btn btn-outline-primary btn-sm" onclick="submitBulkCourier('bulk_sync_steadfast')">
+                <i class="bi bi-arrow-repeat me-1"></i>স্ট্যাটাস Sync
+            </button>
+            <?php endif; ?>
+            <button type="button" class="btn btn-danger btn-sm" id="bulkDeleteBtn" onclick="bulkDelete()">
+                <i class="bi bi-trash me-1"></i>নির্বাচিত মুছুন (<span id="selectedCount">0</span>)
+            </button>
+        </div>
     </div>
-    
+
     <?php if (empty($orders)): ?>
     <p class="text-muted">কোন অর্ডার পাওয়া যায়নি</p>
     <?php else: ?>
@@ -213,8 +191,11 @@ require_once 'includes/header.php';
                         <span class="badge <?php echo $statusLabels[$order['status']]['class']; ?>">
                             <?php echo $statusLabels[$order['status']]['label']; ?>
                         </span>
-                        <?php if ($order['steadfast_tracking_code']): ?>
-                        <br><small class="text-muted">ট্র্যাকিং: <?php echo $order['steadfast_tracking_code']; ?></small>
+                        <?php if (!empty($order['courier_status'])): ?>
+                        <br><span class="badge bg-light text-dark border mt-1"><i class="bi bi-truck me-1"></i><?php echo steadfastCourierStatusLabel($order['courier_status']); ?></span>
+                        <?php endif; ?>
+                        <?php if (!empty($order['steadfast_tracking_code'])): ?>
+                        <br><small class="text-muted">ট্র্যাকিং: <?php echo sanitize($order['steadfast_tracking_code']); ?></small>
                         <?php endif; ?>
                     </td>
                     <td><?php echo date('d M Y, h:i A', strtotime($order['created_at'])); ?></td>
@@ -222,7 +203,7 @@ require_once 'includes/header.php';
                         <a href="<?php echo adminUrl('orders/view/' . $order['id']); ?>" class="btn btn-sm btn-outline-dark" title="বিস্তারিত দেখুন">
                             <i class="bi bi-eye"></i>
                         </a>
-                        
+
                         <?php if ($steadfastActive && $order['status'] != 'cancelled'): ?>
                         <form method="POST" class="d-inline">
                             <input type="hidden" name="action" value="send_to_steadfast">
@@ -244,7 +225,7 @@ require_once 'includes/header.php';
             </tbody>
         </table>
     </div>
-    
+
     <!-- Pagination -->
     <?php if ($totalPages > 1): ?>
     <nav class="mt-4">
@@ -256,7 +237,7 @@ require_once 'includes/header.php';
                 </a>
             </li>
             <?php endif; ?>
-            
+
             <?php for ($i = max(1, $page - 2); $i <= min($totalPages, $page + 2); $i++): ?>
             <li class="page-item <?php echo $i == $page ? 'active' : ''; ?>">
                 <a class="page-link" href="?page=<?php echo $i; ?>&status=<?php echo urlencode($statusFilter); ?>&search=<?php echo urlencode($search); ?>">
@@ -264,7 +245,7 @@ require_once 'includes/header.php';
                 </a>
             </li>
             <?php endfor; ?>
-            
+
             <?php if ($page < $totalPages): ?>
             <li class="page-item">
                 <a class="page-link" href="?page=<?php echo $page + 1; ?>&status=<?php echo urlencode($statusFilter); ?>&search=<?php echo urlencode($search); ?>">
@@ -283,6 +264,10 @@ require_once 'includes/header.php';
     <input type="hidden" name="action" value="bulk_delete">
     <div id="bulkDeleteIds"></div>
 </form>
+<form id="bulkCourierForm" method="POST" style="display:none;">
+    <input type="hidden" name="action" id="bulkCourierAction" value="">
+    <div id="bulkCourierIds"></div>
+</form>
 
 <script>
 function toggleSelectAll() {
@@ -296,7 +281,25 @@ function updateSelectedCount() {
     const checkboxes = document.querySelectorAll('.order-checkbox:checked');
     const count = checkboxes.length;
     document.getElementById('selectedCount').textContent = count;
-    document.getElementById('bulkDeleteBtn').style.display = count > 0 ? 'inline-block' : 'none';
+    document.querySelectorAll('.selectedCountText').forEach(el => el.textContent = count);
+    const actions = document.getElementById('bulkActionButtons');
+    if (actions) actions.style.setProperty('display', count > 0 ? 'flex' : 'none', 'important');
+}
+
+function submitBulkCourier(action) {
+    const checked = document.querySelectorAll('.order-checkbox:checked');
+    if (checked.length === 0) return;
+    const verb = action === 'bulk_send_steadfast' ? 'Steadfast এ পাঠাতে' : 'courier status sync করতে';
+    if (!confirm(checked.length + ' টি অর্ডার ' + verb + ' চান?')) return;
+    const container = document.getElementById('bulkCourierIds');
+    container.innerHTML = '';
+    checked.forEach(cb => {
+        const input = document.createElement('input');
+        input.type = 'hidden'; input.name = 'order_ids[]'; input.value = cb.value;
+        container.appendChild(input);
+    });
+    document.getElementById('bulkCourierAction').value = action;
+    document.getElementById('bulkCourierForm').submit();
 }
 
 function bulkDelete() {

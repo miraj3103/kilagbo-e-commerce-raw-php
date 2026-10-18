@@ -6,66 +6,30 @@
 
 $currentPage = 'affiliate-orders';
 require_once 'includes/header.php';
+require_once __DIR__ . '/../includes/steadfast.php';
 
 $pageTitle = 'অ্যাফিলিয়েট অর্ডার';
+
+// Handle bulk courier actions
+if (isset($_POST['bulk_send_steadfast'])) {
+    $orderIds = array_map('intval', $_POST['order_ids'] ?? []);
+    $result = steadfastSendOrders($pdo, steadfastRefsFromIds('affiliate', $orderIds));
+    steadfastFlashSendResult($result);
+    redirect(adminUrl('affiliate-orders.php'));
+}
+
+if (isset($_POST['bulk_sync_steadfast'])) {
+    $orderIds = array_map('intval', $_POST['order_ids'] ?? []);
+    $result = steadfastSyncOrders($pdo, steadfastRefsFromIds('affiliate', $orderIds), true);
+    steadfastFlashSyncResult($result);
+    redirect(adminUrl('affiliate-orders.php'));
+}
 
 // Handle send to steadfast action
 if (isset($_POST['send_to_steadfast'])) {
     $orderId = intval($_POST['order_id']);
-    
-    // Get order details
-    $stmt = $pdo->prepare("SELECT * FROM affiliate_orders WHERE id = ?");
-    $stmt->execute([$orderId]);
-    $order = $stmt->fetch();
-    
-    if ($order) {
-        $apiKey = getSettings('steadfast_api_key');
-        $secretKey = getSettings('steadfast_secret_key');
-        $steadfastActive = getSettings('steadfast_active') == 1 && $apiKey;
-        
-        if ($steadfastActive && $apiKey && $secretKey) {
-            // Prepare data for Steadfast
-            $data = [
-                'invoice' => $order['order_number'],
-                'recipient_name' => $order['customer_name'],
-                'recipient_phone' => $order['customer_phone'],
-                'recipient_address' => $order['shipping_address'] ?? '',
-                'cod_amount' => $order['total_amount'],
-                'note' => $order['notes'] ?? ''
-            ];
-            
-            $ch = curl_init();
-            curl_setopt($ch, CURLOPT_URL, STEADFAST_BASE_URL . '/create_order');
-            curl_setopt($ch, CURLOPT_POST, true);
-            curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($data));
-            curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-            curl_setopt($ch, CURLOPT_HTTPHEADER, [
-                'Content-Type: application/json',
-                'Api-Key: ' . $apiKey,
-                'Secret-Key: ' . $secretKey
-            ]);
-            
-            $response = curl_exec($ch);
-            $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-            curl_close($ch);
-            
-            $result = json_decode($response, true);
-            
-            if ($httpCode == 200 && isset($result['consignment']['consignment_id'])) {
-                $consignmentId = $result['consignment']['consignment_id'];
-                $trackingCode = $result['consignment']['tracking_code'] ?? '';
-                
-                $pdo->prepare("UPDATE affiliate_orders SET steadfast_consignment_id = ?, steadfast_tracking_code = ?, status = 'processing' WHERE id = ?")
-                    ->execute([$consignmentId, $trackingCode, $orderId]);
-                
-                setFlash('success', 'অর্ডার সফলভাবে Steadfast এ পাঠানো হয়েছে');
-            } else {
-                setFlash('error', 'Steadfast এ পাঠাতে সমস্যা হয়েছে: ' . ($result['message'] ?? 'Unknown error'));
-            }
-        } else {
-            setFlash('error', 'Steadfast কুরিয়ার সেটআপ করা হয়নি বা সক্রিয় নেই');
-        }
-    }
+    $result = steadfastSendOrders($pdo, [['type' => 'affiliate', 'id' => $orderId]], true);
+    steadfastFlashSendResult($result);
     redirect(adminUrl('affiliate-orders.php'));
 }
 
@@ -73,9 +37,9 @@ if (isset($_POST['send_to_steadfast'])) {
 if (isset($_POST['update_tracking'])) {
     $orderId = intval($_POST['order_id']);
     $trackingLink = sanitize($_POST['tracking_link']);
-    
+
     $pdo->prepare("UPDATE affiliate_orders SET tracking_link = ? WHERE id = ?")->execute([$trackingLink, $orderId]);
-    
+
     setFlash('success', 'ট্র্যাকিং লিঙ্ক আপডেট হয়েছে');
     redirect(adminUrl('affiliate-orders.php'));
 }
@@ -84,67 +48,67 @@ if (isset($_POST['update_tracking'])) {
 if (isset($_POST['update_status'])) {
     $orderId = intval($_POST['order_id']);
     $newStatus = sanitize($_POST['status']);
-    
+
     // Get current order status before update
     $stmt = $pdo->prepare("SELECT * FROM affiliate_orders WHERE id = ?");
     $stmt->execute([$orderId]);
     $currentOrder = $stmt->fetch();
-    
+
     if ($currentOrder) {
         $oldStatus = $currentOrder['status'];
-        
+
         // Update the status
         $pdo->prepare("UPDATE affiliate_orders SET status = ? WHERE id = ?")->execute([$newStatus, $orderId]);
-        
+
         // Handle commission crediting/deducting based on status changes
         if ($newStatus === 'delivered' && !$currentOrder['commission_credited']) {
             // Status changed to delivered and commission not yet credited - add commission
             $affiliatorId = $currentOrder['affiliator_id'];
             $commission = $currentOrder['commission_amount'];
-            
+
             // Update affiliator balance
             $pdo->prepare("UPDATE affiliators SET balance = balance + ?, total_earned = total_earned + ? WHERE id = ?")
                 ->execute([$commission, $commission, $affiliatorId]);
-            
+
             // Get new balance
             $newBalance = $pdo->query("SELECT balance FROM affiliators WHERE id = $affiliatorId")->fetchColumn();
-            
+
             // Add balance history
             $pdo->prepare("INSERT INTO affiliator_balance_history (affiliator_id, type, amount, description, reference_type, reference_id, balance_after) VALUES (?, 'credit', ?, ?, 'order', ?, ?)")
                 ->execute([$affiliatorId, $commission, "অর্ডার #{$currentOrder['order_number']} থেকে কমিশন", $orderId, $newBalance]);
-            
+
             // Mark as credited
             $pdo->prepare("UPDATE affiliate_orders SET commission_credited = 1, delivered_at = NOW() WHERE id = ?")->execute([$orderId]);
-            
+
             // Update link stats
             $pdo->prepare("UPDATE affiliate_links SET total_earned = total_earned + ? WHERE id = ?")
                 ->execute([$commission, $currentOrder['affiliate_link_id']]);
-                
+
         } elseif ($newStatus !== 'delivered' && $currentOrder['commission_credited']) {
             // Status changed from delivered to non-delivered and commission was previously credited - deduct commission
             $affiliatorId = $currentOrder['affiliator_id'];
             $commission = $currentOrder['commission_amount'];
-            
+
             // Update affiliator balance (deduct)
             $pdo->prepare("UPDATE affiliators SET balance = balance - ?, total_earned = total_earned - ? WHERE id = ?")
                 ->execute([$commission, $commission, $affiliatorId]);
-            
+
             // Get new balance
             $newBalance = $pdo->query("SELECT balance FROM affiliators WHERE id = $affiliatorId")->fetchColumn();
-            
+
             // Add balance history (debit)
             $pdo->prepare("INSERT INTO affiliator_balance_history (affiliator_id, type, amount, description, reference_type, reference_id, balance_after) VALUES (?, 'debit', ?, ?, 'order', ?, ?)")
                 ->execute([$affiliatorId, $commission, "অর্ডার #{$currentOrder['order_number']} স্ট্যাটাস পরিবর্তন - কমিশন ফেরত", $orderId, $newBalance]);
-            
+
             // Mark as not credited
             $pdo->prepare("UPDATE affiliate_orders SET commission_credited = 0, delivered_at = NULL WHERE id = ?")->execute([$orderId]);
-            
+
             // Update link stats (deduct)
             $pdo->prepare("UPDATE affiliate_links SET total_earned = total_earned - ? WHERE id = ?")
                 ->execute([$commission, $currentOrder['affiliate_link_id']]);
         }
     }
-    
+
     setFlash('success', 'অর্ডার স্ট্যাটাস আপডেট হয়েছে');
     redirect(adminUrl('affiliate-orders.php'));
 }
@@ -152,36 +116,36 @@ if (isset($_POST['update_status'])) {
 // Handle single delete
 if (isset($_POST['delete_order'])) {
     $orderId = intval($_POST['order_id']);
-    
+
     // Get order details for commission reversal if needed
     $stmt = $pdo->prepare("SELECT * FROM affiliate_orders WHERE id = ?");
     $stmt->execute([$orderId]);
     $order = $stmt->fetch();
-    
+
     if ($order) {
         if ($order['commission_credited']) {
             $affiliatorId = $order['affiliator_id'];
             $commission = $order['commission_amount'];
-            
+
             // Update affiliator balance (deduct)
             $pdo->prepare("UPDATE affiliators SET balance = balance - ?, total_earned = total_earned - ? WHERE id = ?")
                 ->execute([$commission, $commission, $affiliatorId]);
-            
+
             // Get new balance
             $newBalance = $pdo->query("SELECT balance FROM affiliators WHERE id = $affiliatorId")->fetchColumn();
-            
+
             // Add balance history (debit)
             $pdo->prepare("INSERT INTO affiliator_balance_history (affiliator_id, type, amount, description, reference_type, reference_id, balance_after) VALUES (?, 'debit', ?, ?, 'order_delete', ?, ?)")
                 ->execute([$affiliatorId, $commission, "অর্ডার #{$order['order_number']} ডিলিট করা হয়েছে - কমিশন ফেরত", $orderId, $newBalance]);
-                
+
             // Update link stats (deduct)
             $pdo->prepare("UPDATE affiliate_links SET total_earned = total_earned - ? WHERE id = ?")
                 ->execute([$commission, $order['affiliate_link_id']]);
         }
-        
+
         $pdo->prepare("DELETE FROM affiliate_order_items WHERE order_id = ?")->execute([$orderId]);
         $pdo->prepare("DELETE FROM affiliate_orders WHERE id = ?")->execute([$orderId]);
-        
+
         setFlash('success', 'অর্ডার সফলভাবে ডিলিট করা হয়েছে');
     }
     redirect(adminUrl('affiliate-orders.php'));
@@ -193,42 +157,44 @@ if (isset($_POST['bulk_delete'])) {
     if (!empty($orderIds)) {
         foreach ($orderIds as $orderId) {
             $orderId = intval($orderId);
-            
+
             // Get order details for commission reversal
             $stmt = $pdo->prepare("SELECT * FROM affiliate_orders WHERE id = ?");
             $stmt->execute([$orderId]);
             $order = $stmt->fetch();
-            
+
             if ($order) {
                 if ($order['commission_credited']) {
                     $affiliatorId = $order['affiliator_id'];
                     $commission = $order['commission_amount'];
-                    
+
                     // Update affiliator balance (deduct)
                     $pdo->prepare("UPDATE affiliators SET balance = balance - ?, total_earned = total_earned - ? WHERE id = ?")
                         ->execute([$commission, $commission, $affiliatorId]);
-                    
+
                     // Get new balance
                     $newBalance = $pdo->query("SELECT balance FROM affiliators WHERE id = $affiliatorId")->fetchColumn();
-                    
+
                     // Add balance history (debit)
                     $pdo->prepare("INSERT INTO affiliator_balance_history (affiliator_id, type, amount, description, reference_type, reference_id, balance_after) VALUES (?, 'debit', ?, ?, 'order_delete', ?, ?)")
                         ->execute([$affiliatorId, $commission, "অর্ডার #{$order['order_number']} ডিলিট করা হয়েছে - কমিশন ফেরত", $orderId, $newBalance]);
-                        
+
                     // Update link stats (deduct)
                     $pdo->prepare("UPDATE affiliate_links SET total_earned = total_earned - ? WHERE id = ?")
                         ->execute([$commission, $order['affiliate_link_id']]);
                 }
-                
+
                 $pdo->prepare("DELETE FROM affiliate_order_items WHERE order_id = ?")->execute([$orderId]);
                 $pdo->prepare("DELETE FROM affiliate_orders WHERE id = ?")->execute([$orderId]);
             }
         }
-        
+
         setFlash('success', count($orderIds) . 'টি অর্ডার সফলভাবে ডিলিট করা হয়েছে');
     }
     redirect(adminUrl('affiliate-orders.php'));
 }
+
+steadfastAutoSyncRecent($pdo, 'affiliate', 20);
 
 $steadfastActive = getSettings('steadfast_active') == 1 && getSettings('steadfast_api_key');
 
@@ -264,7 +230,7 @@ $stmt->execute($params);
 $orders = $stmt->fetchAll();
 
 // Stats
-$stats = $pdo->query("SELECT 
+$stats = $pdo->query("SELECT
     COUNT(*) as total,
     SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END) as pending,
     SUM(CASE WHEN status = 'delivered' THEN 1 ELSE 0 END) as delivered,
@@ -277,9 +243,9 @@ $stats = $pdo->query("SELECT
     <div class="d-flex justify-content-between align-items-center mb-4">
         <h4><i class="bi bi-receipt me-2"></i>অ্যাফিলিয়েট অর্ডার</h4>
     </div>
-    
+
     <?php showFlash(); ?>
-    
+
     <div class="row g-3 mb-4">
         <div class="col-md-3">
             <div class="card bg-primary text-white">
@@ -314,7 +280,7 @@ $stats = $pdo->query("SELECT
             </div>
         </div>
     </div>
-    
+
     <div class="card">
         <div class="card-header">
             <div class="d-flex flex-wrap justify-content-between align-items-center gap-3">
@@ -336,13 +302,23 @@ $stats = $pdo->query("SELECT
                         <button type="submit" class="btn btn-outline-primary w-100">খুঁজুন</button>
                     </div>
                 </form>
-                
+
                 <div id="bulkActions" style="display: none;">
-                    <form method="POST" id="bulkDeleteForm" onsubmit="return confirm('আপনি কি নিশ্চিত যে আপনি নির্বাচিত অর্ডারগুলো ডিলিট করতে চান?')">
-                        <button type="submit" name="bulk_delete" class="btn btn-danger">
-                            <i class="bi bi-trash me-1"></i> নির্বাচিতগুলো ডিলিট করুন (<span id="selectedCount">0</span>)
+                    <div class="d-flex gap-2 flex-wrap">
+                        <?php if ($steadfastActive): ?>
+                        <button type="button" class="btn btn-success" onclick="submitAffiliateCourier('bulk_send_steadfast')">
+                            <i class="bi bi-send me-1"></i>কুরিয়ারে পাঠান (<span class="selectedCountMirror">0</span>)
                         </button>
-                    </form>
+                        <button type="button" class="btn btn-outline-primary" onclick="submitAffiliateCourier('bulk_sync_steadfast')">
+                            <i class="bi bi-arrow-repeat me-1"></i>স্ট্যাটাস Sync
+                        </button>
+                        <?php endif; ?>
+                        <form method="POST" id="bulkDeleteForm" onsubmit="return confirm('আপনি কি নিশ্চিত যে আপনি নির্বাচিত অর্ডারগুলো ডিলিট করতে চান?')">
+                            <button type="submit" name="bulk_delete" class="btn btn-danger">
+                                <i class="bi bi-trash me-1"></i> নির্বাচিতগুলো ডিলিট করুন (<span id="selectedCount">0</span>)
+                            </button>
+                        </form>
+                    </div>
                 </div>
             </div>
         </div>
@@ -415,6 +391,12 @@ $stats = $pdo->query("SELECT
                                     </select>
                                     <input type="hidden" name="update_status" value="1">
                                 </form>
+                                <?php if (!empty($order['courier_status'])): ?>
+                                <span class="badge bg-light text-dark border mt-1"><i class="bi bi-truck me-1"></i><?php echo steadfastCourierStatusLabel($order['courier_status']); ?></span>
+                                <?php endif; ?>
+                                <?php if (!empty($order['steadfast_tracking_code'])): ?>
+                                <small class="d-block text-muted mt-1"><?php echo sanitize($order['steadfast_tracking_code']); ?></small>
+                                <?php endif; ?>
                             </td>
                             <td><?php echo date('d M Y', strtotime($order['created_at'])); ?></td>
                             <td class="text-end">
@@ -434,8 +416,8 @@ $stats = $pdo->query("SELECT
                                 <?php endif; ?>
 
                                 <?php $hasTrackingLink = !empty($order['tracking_link']); ?>
-                                <button type="button" class="btn btn-sm <?php echo $hasTrackingLink ? 'btn-success' : 'btn-outline-secondary'; ?> me-1" 
-                                        onclick="openTrackingModal(<?php echo $order['id']; ?>, '<?php echo addslashes($order['tracking_link'] ?? ''); ?>')" 
+                                <button type="button" class="btn btn-sm <?php echo $hasTrackingLink ? 'btn-success' : 'btn-outline-secondary'; ?> me-1"
+                                        onclick="openTrackingModal(<?php echo $order['id']; ?>, '<?php echo addslashes($order['tracking_link'] ?? ''); ?>')"
                                         title="<?php echo $hasTrackingLink ? 'ট্র্যাকিং লিঙ্ক পাঠানো হয়েছে' : 'ট্র্যাকিং লিঙ্ক পাঠান'; ?>">
                                     <i class="bi bi-link-45deg"></i>
                                 </button>
@@ -485,6 +467,26 @@ $stats = $pdo->query("SELECT
 </div>
 
 <script>
+
+function submitAffiliateCourier(action) {
+    const checked = document.querySelectorAll('.order-checkbox:checked');
+    if (checked.length === 0) return;
+    const verb = action === 'bulk_send_steadfast' ? 'Steadfast এ পাঠাতে' : 'courier status sync করতে';
+    if (!confirm(checked.length + ' টি অর্ডার ' + verb + ' চান?')) return;
+    const form = document.createElement('form');
+    form.method = 'POST'; form.style.display = 'none';
+    const actionInput = document.createElement('input');
+    actionInput.type = 'hidden'; actionInput.name = action; actionInput.value = '1';
+    form.appendChild(actionInput);
+    checked.forEach(cb => {
+        const input = document.createElement('input');
+        input.type = 'hidden'; input.name = 'order_ids[]'; input.value = cb.value;
+        form.appendChild(input);
+    });
+    document.body.appendChild(form);
+    form.submit();
+}
+
 function openTrackingModal(orderId, trackingLink) {
     document.getElementById('tracking_order_id').value = orderId;
     document.getElementById('tracking_link_input').value = trackingLink;
@@ -503,8 +505,10 @@ document.addEventListener('DOMContentLoaded', function() {
         if (checkedCount > 0) {
             bulkActions.style.display = 'block';
             selectedCount.textContent = checkedCount;
+            document.querySelectorAll('.selectedCountMirror').forEach(el => el.textContent = checkedCount);
         } else {
             bulkActions.style.display = 'none';
+            document.querySelectorAll('.selectedCountMirror').forEach(el => el.textContent = 0);
         }
     }
 

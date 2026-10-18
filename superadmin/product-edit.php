@@ -8,6 +8,8 @@ $currentPage = 'products';
 
 require_once '../config/config.php';
 requireAdmin();
+require_once __DIR__ . '/includes/rbac.php';
+requireAdminPermissionForCurrentPage();
 
 $id = intval($_GET['id'] ?? 0);
 if (!$id) {

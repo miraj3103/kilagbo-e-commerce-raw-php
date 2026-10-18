@@ -9,6 +9,8 @@ $currentPage = 'services';
 
 require_once __DIR__ . '/../config/config.php';
 requireAdmin();
+require_once __DIR__ . '/includes/rbac.php';
+requireAdminPermissionForCurrentPage();
 
 $serviceId = intval($_GET['id'] ?? 0);
 if (!$serviceId) {

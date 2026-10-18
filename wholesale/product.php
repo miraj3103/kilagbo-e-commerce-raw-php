@@ -65,6 +65,42 @@ include __DIR__ . '/../includes/header.php';
         position: sticky;
         top: 100px;
     }
+
+    .gallery-stage {
+        position: relative;
+        touch-action: pan-y;
+    }
+
+    .gallery-stage:focus {
+        outline: none;
+    }
+
+    .gallery-nav {
+        position: absolute;
+        top: 50%;
+        transform: translateY(-50%);
+        width: 44px;
+        height: 44px;
+        border-radius: 50%;
+        border: 1px solid rgba(0, 0, 0, 0.12);
+        background: rgba(255, 255, 255, 0.92);
+        color: #333;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: 5;
+        box-shadow: 0 4px 14px rgba(0, 0, 0, 0.12);
+        transition: all 0.2s ease;
+    }
+
+    .gallery-nav:hover {
+        background: #fff;
+        color: #667eea;
+        transform: translateY(-50%) scale(1.05);
+    }
+
+    .gallery-nav.prev { left: 12px; }
+    .gallery-nav.next { right: 12px; }
     
     .main-image {
         width: 100%;
@@ -276,6 +312,13 @@ include __DIR__ . '/../includes/header.php';
     }
 
     @media (max-width: 768px) {
+        .gallery-nav {
+            width: 38px;
+            height: 38px;
+        }
+        .gallery-nav.prev { left: 8px; }
+        .gallery-nav.next { right: 8px; }
+
         .product-price .current {
             font-size: 1.5rem;
         }
@@ -348,21 +391,33 @@ include __DIR__ . '/../includes/header.php';
             <!-- Gallery -->
             <div class="col-lg-5 mb-4">
                 <div class="product-gallery">
-                    <div class="main-image" id="mainImageContainer">
-                        <?php if ($product['image']): ?>
-                        <img src="<?php echo imageUrl($product['image']); ?>" alt="<?php echo $product['name']; ?>" id="mainImage" data-zoom-image="<?php echo imageUrl($product['image']); ?>">
-                        <?php else: ?>
-                        <img src="<?php echo baseUrl('assets/images/placeholder.png'); ?>" alt="<?php echo $product['name']; ?>" id="mainImage" data-zoom-image="<?php echo baseUrl('assets/images/placeholder.png'); ?>">
+                    <?php $wholesaleGalleryCount = ($product['image'] ? 1 : 0) + count($gallery); ?>
+                    <div class="gallery-stage" id="wholesaleGalleryStage" tabindex="0" aria-label="পাইকারি পণ্যের গ্যালারি">
+                        <div class="main-image" id="mainImageContainer">
+                            <?php if ($product['image']): ?>
+                            <img src="<?php echo imageUrl($product['image']); ?>" alt="<?php echo $product['name']; ?>" id="mainImage" data-zoom-image="<?php echo imageUrl($product['image']); ?>">
+                            <?php else: ?>
+                            <img src="<?php echo baseUrl('assets/images/placeholder.png'); ?>" alt="<?php echo $product['name']; ?>" id="mainImage" data-zoom-image="<?php echo baseUrl('assets/images/placeholder.png'); ?>">
+                            <?php endif; ?>
+                        </div>
+                        <?php if ($wholesaleGalleryCount > 1): ?>
+                        <button type="button" class="gallery-nav prev" onclick="wholesaleGalleryPrev()" aria-label="আগের ছবি">
+                            <i class="bi bi-chevron-left"></i>
+                        </button>
+                        <button type="button" class="gallery-nav next" onclick="wholesaleGalleryNext()" aria-label="পরের ছবি">
+                            <i class="bi bi-chevron-right"></i>
+                        </button>
                         <?php endif; ?>
                     </div>
                     
                     <?php if (!empty($gallery) || $product['image']): ?>
                     <div class="gallery-thumbs">
+                        <?php $galleryIndex = 0; ?>
                         <?php if ($product['image']): ?>
-                        <img src="<?php echo imageUrl($product['image']); ?>" alt="" class="active" onclick="changeImage(this)">
+                        <img src="<?php echo imageUrl($product['image']); ?>" alt="" class="active" onclick="changeImage(this)" data-gallery-index="<?php echo $galleryIndex++; ?>">
                         <?php endif; ?>
                         <?php foreach ($gallery as $img): ?>
-                        <img src="<?php echo imageUrl($img); ?>" alt="" onclick="changeImage(this)">
+                        <img src="<?php echo imageUrl($img); ?>" alt="" onclick="changeImage(this)" data-gallery-index="<?php echo $galleryIndex++; ?>">
                         <?php endforeach; ?>
                     </div>
                     <?php endif; ?>
@@ -527,6 +582,7 @@ include __DIR__ . '/../includes/header.php';
 <script>
 const minQty = <?php echo $product['min_order_qty']; ?>;
 const price = <?php echo $product['wholesale_price']; ?>;
+let currentWholesaleGalleryIndex = 0;
 
 function changeImage(el) {
     const main = document.getElementById('mainImage');
@@ -535,7 +591,64 @@ function changeImage(el) {
     main.setAttribute('data-zoom-image', el.src);
     document.querySelectorAll('.gallery-thumbs img').forEach(img => img.classList.remove('active'));
     el.classList.add('active');
+    const index = parseInt(el.dataset.galleryIndex, 10);
+    if (!Number.isNaN(index)) currentWholesaleGalleryIndex = index;
     initElevateZoom();
+}
+
+function wholesaleGalleryGoTo(index) {
+    const items = Array.from(document.querySelectorAll('.gallery-thumbs img[data-gallery-index]'));
+    if (items.length < 2) return;
+    const normalizedIndex = (index + items.length) % items.length;
+    const item = items[normalizedIndex];
+    if (!item) return;
+    changeImage(item);
+    item.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
+}
+
+function wholesaleGalleryPrev() {
+    wholesaleGalleryGoTo(currentWholesaleGalleryIndex - 1);
+}
+
+function wholesaleGalleryNext() {
+    wholesaleGalleryGoTo(currentWholesaleGalleryIndex + 1);
+}
+
+function initWholesaleGalleryNavigation() {
+    const stage = document.getElementById('wholesaleGalleryStage');
+    const activeItem = document.querySelector('.gallery-thumbs img.active[data-gallery-index]');
+    if (activeItem) {
+        const index = parseInt(activeItem.dataset.galleryIndex, 10);
+        if (!Number.isNaN(index)) currentWholesaleGalleryIndex = index;
+    }
+    if (!stage) return;
+
+    let touchStartX = 0;
+    let touchStartY = 0;
+
+    stage.addEventListener('touchstart', function(event) {
+        const touch = event.changedTouches[0];
+        touchStartX = touch.clientX;
+        touchStartY = touch.clientY;
+    }, { passive: true });
+
+    stage.addEventListener('touchend', function(event) {
+        const touch = event.changedTouches[0];
+        const deltaX = touch.clientX - touchStartX;
+        const deltaY = touch.clientY - touchStartY;
+        if (Math.abs(deltaX) < 45 || Math.abs(deltaX) <= Math.abs(deltaY)) return;
+        deltaX < 0 ? wholesaleGalleryNext() : wholesaleGalleryPrev();
+    }, { passive: true });
+
+    stage.addEventListener('keydown', function(event) {
+        if (event.key === 'ArrowLeft') {
+            event.preventDefault();
+            wholesaleGalleryPrev();
+        } else if (event.key === 'ArrowRight') {
+            event.preventDefault();
+            wholesaleGalleryNext();
+        }
+    });
 }
 
 // Image Zoom Functionality
@@ -563,7 +676,10 @@ function initElevateZoom() {
     }
 }
 
-document.addEventListener('DOMContentLoaded', initElevateZoom);
+document.addEventListener('DOMContentLoaded', function() {
+    initElevateZoom();
+    initWholesaleGalleryNavigation();
+});
 
 function increaseQty() {
     const input = document.getElementById('qty');
