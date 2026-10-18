@@ -14,6 +14,7 @@ $error = $_GET['error'] ?? '';
 $state = $_GET['state'] ?? '';
 
 $isReseller = ($state === 'resell');
+$isWholesale = ($state === 'wholesale');
 
 if ($error) {
     setFlash('error', 'লগইন বাতিল করা হয়েছে');
@@ -181,8 +182,14 @@ try {
         $pdo->prepare("UPDATE wishlist SET user_id = ?, session_id = NULL WHERE session_id = ? AND user_id IS NULL")
             ->execute([$userId, $sessionId]);
         
-        setFlash('success', 'সফলভাবে লগইন হয়েছে');
-        redirect(baseUrl('account'));
+        if ($isWholesale) {
+            require_once __DIR__ . '/wholesale/includes/access.php';
+            if (wholesaleSubmitRequest($pdo, (int)$userId)) {
+                wholesaleNotifyNewRequest((int)$userId);
+            }
+        }
+        setFlash('success', $isWholesale ? 'পাইকারি আবেদনের অবস্থা দেখুন' : 'সফলভাবে লগইন হয়েছে');
+        redirect(baseUrl($isWholesale ? 'wholesale/access.php' : 'account'));
     }
     
 } catch (Exception $e) {

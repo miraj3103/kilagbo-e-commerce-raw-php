@@ -5,6 +5,7 @@
  */
 
 require_once 'config/config.php';
+require_once __DIR__ . '/wholesale/includes/access.php';
 
 $currentPage = 'retail';
 $pageTitle = 'চেকআউট';
@@ -40,6 +41,10 @@ if ($userId) {
     $stmt->execute([$sessionId]);
 }
 $cartItems = $stmt->fetchAll();
+if (!wholesaleIsApproved($pdo)) {
+    // Hide previously stored wholesale cart rows until explicit approval.
+    $cartItems = array_values(array_filter($cartItems, static fn($item) => $item['section'] !== 'wholesale'));
+}
 
 if (empty($cartItems)) {
     redirect(baseUrl('cart'));
@@ -166,11 +171,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $stmt->execute([$orderId, $item['product_id'], $item['name'], $variationJson, $item['quantity'], $price, $itemTotal]);
         }
         
-        // Clear cart
+        // Clear purchased items only; keep previously stored, hidden wholesale items
+        // if this retail customer does not yet have wholesale approval.
+        $wholesaleApproved = wholesaleIsApproved($pdo);
         if ($userId) {
-            $pdo->prepare("DELETE FROM cart WHERE user_id = ?")->execute([$userId]);
+            $clearSql = $wholesaleApproved ? "DELETE FROM cart WHERE user_id = ?" : "DELETE FROM cart WHERE user_id = ? AND section <> 'wholesale'";
+            $pdo->prepare($clearSql)->execute([$userId]);
         } else {
-            $pdo->prepare("DELETE FROM cart WHERE session_id = ?")->execute([$sessionId]);
+            $clearSql = $wholesaleApproved ? "DELETE FROM cart WHERE session_id = ?" : "DELETE FROM cart WHERE session_id = ? AND section <> 'wholesale'";
+            $pdo->prepare($clearSql)->execute([$sessionId]);
         }
         
         // Add notification

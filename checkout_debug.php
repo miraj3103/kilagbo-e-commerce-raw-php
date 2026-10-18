@@ -3,6 +3,7 @@
  * DEBUG VERSION OF CHECKOUT.PHP
  */
 require_once 'config/config.php';
+require_once __DIR__ . '/wholesale/includes/access.php';
 
 // Enable error reporting
 error_reporting(E_ALL);
@@ -46,6 +47,9 @@ if ($userId) {
     $stmt->execute([$sessionId]);
 }
 $cartItems = $stmt->fetchAll();
+if (!wholesaleIsApproved($pdo)) {
+    $cartItems = array_values(array_filter($cartItems, static fn($item) => $item['section'] !== 'wholesale'));
+}
 
 debug_log("Found " . count($cartItems) . " items in cart");
 

@@ -179,6 +179,7 @@ function adminRoutePermissionMap(): array
         'digital-orders.php' => 'retail.manage',
 
         'wholesale-products.php' => 'wholesale.manage',
+        'wholesale-requests.php' => 'wholesale.manage',
         'wholesale-add.php' => 'wholesale.manage',
         'wholesale-add-new.php' => 'wholesale.manage',
         'wholesale-edit.php' => 'wholesale.manage',

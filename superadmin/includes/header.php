@@ -621,11 +621,21 @@ $notifications = $notifStmt->fetchAll();
                 <?php if (adminCan('wholesale.manage')): ?>
 <!-- Wholesale Section -->
                 <li class="nav-item">
-                    <a href="#wholesaleSubmenu" class="nav-link <?php echo in_array($currentPage ?? '', ['wholesale-products', 'wholesale-orders', 'wholesale-categories', 'wholesale-delivery']) ? 'active' : ''; ?>" data-bs-toggle="collapse">
+                    <a href="#wholesaleSubmenu" class="nav-link <?php echo in_array($currentPage ?? '', ['wholesale-products', 'wholesale-requests', 'wholesale-orders', 'wholesale-categories', 'wholesale-delivery']) ? 'active' : ''; ?>" data-bs-toggle="collapse">
                         <i class="bi bi-shop-window"></i> পাইকারি
                         <i class="bi bi-chevron-down ms-auto" style="font-size: 0.7rem;"></i>
                     </a>
-                    <ul class="collapse <?php echo in_array($currentPage ?? '', ['wholesale-products', 'wholesale-orders', 'wholesale-categories', 'wholesale-delivery']) ? 'show' : ''; ?>" id="wholesaleSubmenu" style="list-style: none; padding-left: 30px;">
+                    <ul class="collapse <?php echo in_array($currentPage ?? '', ['wholesale-products', 'wholesale-requests', 'wholesale-orders', 'wholesale-categories', 'wholesale-delivery']) ? 'show' : ''; ?>" id="wholesaleSubmenu" style="list-style: none; padding-left: 30px;">
+                        <li class="nav-item">
+                            <a href="<?php echo adminUrl('wholesale-requests.php'); ?>" class="nav-link <?php echo ($currentPage ?? '') === 'wholesale-requests' ? 'active' : ''; ?>" style="padding:8px 15px;font-size:.9rem;">
+                                <i class="bi bi-person-check"></i> পাইকারি অনুমোদন
+                                <?php
+                                try {
+                                    $pendingWholesale = (int)$pdo->query("SELECT COUNT(*) FROM wholesale_access_requests WHERE status='pending'")->fetchColumn();
+                                } catch (Throwable $e) { $pendingWholesale = 0; }
+                                if ($pendingWholesale > 0): ?><span class="menu-badge"><?php echo $pendingWholesale; ?></span><?php endif; ?>
+                            </a>
+                        </li>
                         <li class="nav-item">
                             <a href="<?php echo adminUrl('wholesale-products'); ?>" class="nav-link <?php echo ($currentPage ?? '') == 'wholesale-products' ? 'active' : ''; ?>" style="padding: 8px 15px; font-size: 0.9rem;">
                                 <i class="bi bi-box-seam"></i> পণ্য

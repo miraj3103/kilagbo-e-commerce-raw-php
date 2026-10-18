@@ -86,6 +86,10 @@ try {
     die("Database connection failed: " . $e->getMessage());
 }
 
+// NOTE13_SITE_LOCK_HOOK
+require_once __DIR__ . '/../site-control.php';
+// END_NOTE13_SITE_LOCK_HOOK
+
 // Helper functions
 function baseUrl($path = '') {
     return SITE_URL . '/' . ltrim($path, '/');

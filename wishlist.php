@@ -5,6 +5,7 @@
  */
 
 require_once 'config/config.php';
+require_once __DIR__ . '/wholesale/includes/access.php';
 
 $currentPage = 'retail';
 $pageTitle = 'উইশলিস্ট';
@@ -58,7 +59,7 @@ if ($userId) {
     ");
     $wholesaleStmt->execute([$sessionId]);
 }
-$wholesaleItems = $wholesaleStmt->fetchAll();
+$wholesaleItems = wholesaleIsApproved($pdo) ? $wholesaleStmt->fetchAll() : [];
 
 // Combine all items
 $wishlistItems = array_merge($retailItems, $wholesaleItems);

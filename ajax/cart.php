@@ -5,6 +5,7 @@
  */
 
 require_once '../config/config.php';
+require_once __DIR__ . '/../wholesale/includes/access.php';
 
 // Enable error reporting for debugging
 ini_set('display_errors', 0); // Keep 0 for JSON response, errors will break JSON
@@ -33,6 +34,10 @@ $tableName = 'products';
 $priceColumn = 'sale_price, regular_price';
 
 if ($section === 'wholesale') {
+    if (!wholesaleIsApproved($pdo)) {
+        http_response_code(403);
+        throw new Exception('পাইকারি অর্ডার করতে অনুমোদন প্রয়োজন।');
+    }
     $tableName = 'wholesale_products';
     $productStmt = $pdo->prepare("SELECT id, name, min_order_qty, stock FROM wholesale_products WHERE id = ? AND status = 1");
 } elseif ($section === 'affiliate') {

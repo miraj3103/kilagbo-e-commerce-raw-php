@@ -5,6 +5,7 @@
  */
 
 require_once 'config/config.php';
+require_once __DIR__ . '/wholesale/includes/access.php';
 
 $currentPage = 'retail';
 $pageTitle = 'কার্ট';
@@ -70,6 +71,10 @@ if ($userId) {
     $stmt->execute([$sessionId]);
 }
 $cartItems = $stmt->fetchAll();
+if (!wholesaleIsApproved($pdo)) {
+    // Hide previously stored wholesale cart rows until explicit approval.
+    $cartItems = array_values(array_filter($cartItems, static fn($item) => $item['section'] !== 'wholesale'));
+}
 
 // Calculate totals
 $subtotal = 0;

@@ -5,6 +5,7 @@
  */
 
 require_once '../config/config.php';
+require_once __DIR__ . '/../wholesale/includes/access.php';
 
 header('Content-Type: application/json');
 
@@ -23,6 +24,12 @@ if (!in_array($section, ['retail', 'wholesale'])) {
 
 if (!$productId) {
     echo json_encode(['success' => false, 'message' => 'পণ্য আইডি প্রয়োজন']);
+    exit;
+}
+
+if ($section === 'wholesale' && !wholesaleIsApproved($pdo)) {
+    http_response_code(403);
+    echo json_encode(['success' => false, 'message' => 'পাইকারি পণ্য দেখতে অনুমোদন প্রয়োজন।']);
     exit;
 }
 

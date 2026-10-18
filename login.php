@@ -5,9 +5,10 @@
  */
 
 require_once 'config/config.php';
+$wholesaleIntent = (($_GET['wholesale'] ?? $_POST['wholesale'] ?? '') === '1');
 
 if (isUserLoggedIn()) {
-    redirect(baseUrl('account'));
+    redirect(baseUrl($wholesaleIntent ? 'wholesale/access.php' : 'account'));
 }
 
 $currentPage = 'retail';
@@ -60,7 +61,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 ->execute([$user['id'], $sessionId]);
             
             setFlash('success', 'সফলভাবে লগইন হয়েছে');
-            redirect(baseUrl('account'));
+            redirect(baseUrl($wholesaleIntent ? 'wholesale/access.php' : 'account'));
         } else {
             $error = 'ইমেইল বা পাসওয়ার্ড ভুল';
         }
@@ -197,6 +198,7 @@ include 'includes/header.php';
             <?php showFlash(); ?>
             
             <form method="POST">
+                <?php if ($wholesaleIntent): ?><input type="hidden" name="wholesale" value="1"><?php endif; ?>
                 <div class="mb-3">
                     <label class="form-label">ইমেইল</label>
                     <input type="email" name="email" class="form-control" placeholder="আপনার ইমেইল দিন" required value="<?php echo $_POST['email'] ?? ($_COOKIE['user_remember_email'] ?? ''); ?>">
@@ -230,7 +232,8 @@ include 'includes/header.php';
                     'redirect_uri' => baseUrl('auth-callback?provider=google'),
                     'response_type' => 'code',
                     'scope' => 'email profile',
-                    'access_type' => 'online'
+                    'access_type' => 'online',
+                    'state' => $wholesaleIntent ? 'wholesale' : ''
                 ]);
                 ?>
                 <a href="<?php echo $googleAuthUrl; ?>" class="btn-social btn-google">
@@ -250,7 +253,8 @@ include 'includes/header.php';
                     'client_id' => $facebookAppId,
                     'redirect_uri' => baseUrl('auth-callback?provider=facebook'),
                     'scope' => 'email,public_profile',
-                    'response_type' => 'code'
+                    'response_type' => 'code',
+                    'state' => $wholesaleIntent ? 'wholesale' : ''
                 ]);
                 ?>
                 <a href="<?php echo $facebookAuthUrl; ?>" class="btn-social btn-facebook">

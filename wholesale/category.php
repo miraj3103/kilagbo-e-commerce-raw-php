@@ -5,6 +5,8 @@
  */
 
 require_once __DIR__ . '/../config/config.php';
+require_once __DIR__ . '/includes/access.php';
+wholesaleRequireApproval($pdo);
 
 $slug = sanitize($_GET['slug'] ?? '');
 if (!$slug) {
