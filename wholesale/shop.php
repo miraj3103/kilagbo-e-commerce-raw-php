@@ -128,7 +128,17 @@ include __DIR__ . '/../includes/header.php';
     
     .product-card .product-info {
         padding: 15px;
+        display: flex;
+        flex-direction: column;
+        min-height: 150px;
     }
+    .product-card .product-info > .d-flex.justify-content-between {
+        margin-top: auto;
+        flex-direction: column;
+        align-items: stretch !important;
+        gap: 9px;
+    }
+    .product-card .min-qty-badge { align-self: flex-start; }
     
     .product-card .product-title {
         font-weight: 600;
@@ -181,6 +191,41 @@ include __DIR__ . '/../includes/header.php';
         color: var(--secondary-color);
         background: var(--accent-color);
     }
+    /* Product cards reuse the validated existing wholesale AJAX cart endpoint. */
+    .product-card .btn-wholesale {
+        width: 100%;
+        cursor: pointer;
+        text-align: center;
+        justify-content: center;
+        white-space: nowrap;
+        min-height: 33px;
+    }
+    .product-card .btn-wholesale:focus-visible {
+        outline: 2px solid var(--primary-color);
+        outline-offset: 2px;
+    }
+    /* Preserve the original order link and provide a separate cart action. */
+    .product-card .product-actions {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px;
+        width: 100%;
+    }
+    .product-card .btn-wholesale-cart {
+        background: var(--secondary-color);
+        color: var(--primary-color);
+        border: 1px solid var(--primary-color);
+    }
+    .product-card .btn-wholesale-cart:hover {
+        background: var(--bg-light);
+        color: var(--primary-color);
+    }
+    @media (max-width: 991.98px) {
+        .product-card .product-actions {
+            grid-template-columns: minmax(0, 1fr);
+            gap: 6px;
+        }
+    }
 </style>
 
 <div class="shop-header">
@@ -230,7 +275,16 @@ include __DIR__ . '/../includes/header.php';
                                     <i class="bi bi-heart me-1"></i>উইশলিস্ট
                                 </a>
                                 <?php else: ?>
-                                <a href="<?php echo baseUrl('wholesale/product/' . $product['slug']); ?>" class="btn-wholesale btn-sm">অর্ডার</a>
+                                <div class="product-actions">
+                                    <a href="<?php echo baseUrl('wholesale/product/' . $product['slug']); ?>" class="btn-wholesale btn-sm">অর্ডার</a>
+                                    <?php if ($product['stock'] !== null && (int)$product['stock'] < max(1, (int)$product['min_order_qty'])): ?>
+                                    <span class="btn-wholesale btn-wholesale-cart btn-sm" style="opacity:.6;cursor:not-allowed;" title="ন্যূনতম অর্ডারের জন্য পর্যাপ্ত স্টক নেই">স্টক অপর্যাপ্ত</span>
+                                    <?php elseif (!empty($product['has_variations'])): ?>
+                                    <a href="<?php echo baseUrl('wholesale/product/' . $product['slug']); ?>" class="btn-wholesale btn-wholesale-cart btn-sm" title="ভেরিয়েশন বেছে কার্টে যোগ করুন"><i class="bi bi-sliders"></i> অপশন বেছে নিন</a>
+                                    <?php else: ?>
+                                    <button type="button" class="btn-wholesale btn-wholesale-cart btn-sm" onclick="addToCart(<?php echo (int)$product['id']; ?>, <?php echo max(1, (int)$product['min_order_qty']); ?>, null, 'wholesale')" title="ন্যূনতম <?php echo max(1, (int)$product['min_order_qty']); ?> পিস কার্টে যোগ করুন"><i class="bi bi-cart-plus"></i> কার্টে যোগ করুন</button>
+                                    <?php endif; ?>
+                                </div>
                                 <?php endif; ?>
                             </div>
                         </div>

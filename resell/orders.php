@@ -128,6 +128,7 @@ include __DIR__ . '/includes/header.php';
     .status-shipped { background: #d1ecf1; color: #0c5460; }
     .status-delivered { background: #d4edda; color: #155724; }
     .status-cancelled { background: #f8d7da; color: #721c24; }
+    .status-partial { background: #fff3cd; color: #856404; }
     .status-returned { background: #e2e3e5; color: #383d41; }
     
     .profit-badge {
@@ -198,6 +199,7 @@ include __DIR__ . '/includes/header.php';
                 <option value="processing" <?php echo $status === 'processing' ? 'selected' : ''; ?>>প্রসেসিং</option>
                 <option value="shipped" <?php echo $status === 'shipped' ? 'selected' : ''; ?>>শিপড</option>
                 <option value="delivered" <?php echo $status === 'delivered' ? 'selected' : ''; ?>>ডেলিভার্ড</option>
+                <option value="partial" <?php echo $status === 'partial' ? 'selected' : ''; ?>>পার্শিয়াল</option>
                 <option value="cancelled" <?php echo $status === 'cancelled' ? 'selected' : ''; ?>>বাতিল</option>
             </select>
         </div>
@@ -265,7 +267,8 @@ include __DIR__ . '/includes/header.php';
                                 'shipped' => 'শিপড',
                                 'delivered' => 'ডেলিভার্ড',
                                 'cancelled' => 'বাতিল',
-                                'returned' => 'রিটার্ন'
+                                'returned' => 'রিটার্ন',
+                                'partial' => 'পার্শিয়াল'
                             ];
                             echo $statusLabels[$order['status']] ?? $order['status'];
                             ?>

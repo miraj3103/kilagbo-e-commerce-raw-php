@@ -150,6 +150,39 @@ if (!function_exists('steadfastOrderConfig')) {
         ];
     }
 
+    /** Public customer tracking URL. The /t/{code} pattern is used by Steadfast shipping plugins. */
+    function steadfastTrackingUrl(string $trackingCode): ?string
+    {
+        $trackingCode = trim($trackingCode);
+        if (!preg_match('/\A[A-Za-z0-9_-]{4,100}\z/', $trackingCode)) {
+            return null;
+        }
+        return 'https://steadfast.com.bd/t/' . rawurlencode($trackingCode);
+    }
+
+    /**
+     * Only an explicitly identified, paid DELIVERY CHARGE can be used for
+     * reseller deductions. Never treat COD amount, courier fee, payment payout,
+     * or the status partial_delivered as proof of what the customer paid.
+     */
+    function steadfastVerifiedDeliveryChargePaid(array $data): ?float
+    {
+        foreach (['collected_delivery_charge', 'paid_delivery_charge', 'delivery_charge_collected'] as $field) {
+            if (!array_key_exists($field, $data)) {
+                continue;
+            }
+            $raw = $data[$field];
+            if ((is_int($raw) || is_float($raw) || is_string($raw)) && is_numeric($raw)) {
+                $amount = (float)$raw;
+                if (is_finite($amount) && $amount >= 0) {
+                    return round($amount, 2);
+                }
+            }
+            return null;
+        }
+        return null;
+    }
+
     function steadfastMarkSent(PDO $pdo, string $type, int $orderId, $consignmentId, string $trackingCode, string $courierStatus = 'in_review'): void
     {
         $config = steadfastOrderConfig($type);
@@ -164,10 +197,19 @@ if (!function_exists('steadfastOrderConfig')) {
 
         if ($type === 'wholesale') {
             $sql .= ", courier_name = 'Steadfast', tracking_id = ?";
-            $params = [$consignmentId, $trackingCode, $courierStatus, $trackingCode, $orderId];
+            $params = [$consignmentId, $trackingCode, $courierStatus, $trackingCode];
+        } elseif ($type === 'resell') {
+            // Preserve an existing manual link; populate automatically on new bookings.
+            $sql .= ", tracking_link = CASE WHEN tracking_link IS NULL OR tracking_link = '' OR tracking_link LIKE 'https://steadfast.com.bd/t/%' THEN ? ELSE tracking_link END";
+            $params = [$consignmentId, $trackingCode, $courierStatus, steadfastTrackingUrl($trackingCode)];
+        } elseif ($type === 'affiliate') {
+            $sql .= ", tracking_link = COALESCE(NULLIF(tracking_link, ''), ?)";
+            $params = [$consignmentId, $trackingCode, $courierStatus, steadfastTrackingUrl($trackingCode)];
         } else {
-            $params = [$consignmentId, $trackingCode, $courierStatus, $orderId];
+            $params = [$consignmentId, $trackingCode, $courierStatus];
         }
+
+        $params[] = $orderId;
 
         $sql .= " WHERE id = ?";
         $pdo->prepare($sql)->execute($params);
@@ -376,15 +418,35 @@ if (!function_exists('steadfastOrderConfig')) {
         }
     }
 
-    function steadfastApplyCourierStatus(PDO $pdo, string $type, int $orderId, string $courierStatus): void
+    function steadfastApplyCourierStatus(PDO $pdo, string $type, int $orderId, string $courierStatus, array $apiPayload = []): void
     {
         $config = steadfastOrderConfig($type);
         if (!$config) {
             return;
         }
 
+        $courierStatus = strtolower(trim($courierStatus));
+        $known = ['in_review', 'pending', 'hold', 'delivered_approval_pending',
+            'partial_delivered_approval_pending', 'cancelled_approval_pending',
+            'unknown_approval_pending', 'delivered', 'partial_delivered', 'cancelled', 'unknown'];
+        if (!in_array($courierStatus, $known, true)) {
+            throw new RuntimeException('Unknown courier status: ' . $courierStatus);
+        }
+
         $pdo->prepare("UPDATE `{$config['table']}` SET courier_status = ?, courier_status_updated_at = NOW(), courier_last_sync_at = NOW() WHERE id = ?")
             ->execute([$courierStatus, $orderId]);
+
+        // A courier partial delivery means SOME GOODS may have been accepted.
+        // It does NOT prove a partial delivery-charge payment. Set the local
+        // Partial state and deduct only if an authenticated response expressly
+        // identifies the customer's paid delivery charge.
+        if ($type === 'resell' && $courierStatus === 'partial_delivered') {
+            $paid = steadfastVerifiedDeliveryChargePaid($apiPayload);
+            if ($paid !== null) {
+                resellApplyVerifiedPartialDelivery($pdo, $orderId, $paid, 'steadfast:verified_delivery_charge');
+            }
+            return;
+        }
 
         // Only terminal states are allowed to trigger financial/status transitions.
         // Pending/hold/approval-pending remain visible as courier_status without premature balance changes.
@@ -400,6 +462,15 @@ if (!function_exists('steadfastOrderConfig')) {
         }
 
         if ($type === 'resell') {
+            // Manual Partial is an explicit financial override. Continue syncing
+            // courier_status but do not silently reverse an admin's adjustment.
+            $st = $pdo->prepare('SELECT status, partial_delivery_source FROM resell_orders WHERE id = ?');
+            $st->execute([$orderId]);
+            $current = $st->fetch(PDO::FETCH_ASSOC);
+            if ($current && $current['status'] === 'partial' &&
+                ($current['partial_delivery_source'] ?? '') === 'admin_manual') {
+                return;
+            }
             steadfastApplyResellStatus($pdo, $orderId, $localStatus);
         } elseif ($type === 'affiliate') {
             steadfastApplyAffiliateStatus($pdo, $orderId, $localStatus);
@@ -437,7 +508,15 @@ if (!function_exists('steadfastOrderConfig')) {
         $api = steadfastRequest('GET', $path);
         $status = $api['data']['delivery_status'] ?? null;
         if ($api['ok'] && $status) {
-            steadfastApplyCourierStatus($pdo, $type, $orderId, (string)$status);
+            // Self-heal tracking links for older consignments (requires NOTE15 migration).
+            if ($type === 'resell' && empty($order['tracking_link']) && !empty($order['steadfast_tracking_code'])) {
+                $url = steadfastTrackingUrl((string)$order['steadfast_tracking_code']);
+                if ($url !== null) {
+                    $pdo->prepare("UPDATE resell_orders SET tracking_link = ? WHERE id = ? AND (tracking_link IS NULL OR tracking_link = '')")
+                        ->execute([$url, $orderId]);
+                }
+            }
+            steadfastApplyCourierStatus($pdo, $type, $orderId, (string)$status, $api['data']);
             return ['ok' => true, 'status' => (string)$status];
         }
 

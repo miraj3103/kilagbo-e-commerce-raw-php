@@ -64,6 +64,7 @@ include __DIR__ . '/includes/header.php';
     .status-processing { background: #cce5ff; color: #004085; }
     .status-shipped { background: #d1ecf1; color: #0c5460; }
     .status-delivered { background: #d4edda; color: #155724; }
+    .status-partial { background: #fff3cd; color: #856404; }
     .status-cancelled { background: #f8d7da; color: #721c24; }
     
     .detail-card {
@@ -150,6 +151,15 @@ include __DIR__ . '/includes/header.php';
     <i class="bi bi-arrow-left me-2"></i>অর্ডার তালিকায় ফিরুন
 </a>
 
+<?php if ($order['status'] === 'partial' && $order['partial_delivery_paid'] !== null): ?>
+<div class="alert alert-warning">
+    ডেলিভারি চার্জ: <strong><?php echo formatPrice($order['delivery_charge']); ?></strong>;
+    গ্রাহক পরিশোধ করেছেন: <strong><?php echo formatPrice($order['partial_delivery_paid']); ?></strong>;
+    ব্যালেন্স থেকে কর্তন: <strong><?php echo formatPrice($order['partial_delivery_deducted']); ?></strong>;
+    এখনও Due: <strong><?php echo formatPrice($order['partial_delivery_due'] ?? 0); ?></strong>।
+</div>
+<?php endif; ?>
+
 <div class="order-header">
     <div>
         <span class="order-number">#<?php echo $order['order_number']; ?></span>
@@ -163,7 +173,8 @@ include __DIR__ . '/includes/header.php';
             'shipped' => 'শিপড',
             'delivered' => 'ডেলিভার্ড',
             'cancelled' => 'বাতিল',
-            'returned' => 'রিটার্ন'
+            'returned' => 'রিটার্ন',
+            'partial' => 'পার্শিয়াল'
         ];
         echo $statusLabels[$order['status']] ?? $order['status'];
         ?>

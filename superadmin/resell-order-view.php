@@ -51,13 +51,31 @@ function resellOrderShippingAreaLabel($area) {
     return $area ?: 'নির্ধারিত নয়';
 }
 
+// Stage 2: manual Partial collection uses a separate amount, not a courier COD guess.
+if (empty($_SESSION['note15_partial_csrf'])) {
+    $_SESSION['note15_partial_csrf'] = bin2hex(random_bytes(32));
+}
+
 // Handle status update
 if (isset($_POST['update_status'])) {
     $newStatus = sanitize($_POST['status']);
 
     try {
-        resellApplyOrderStatusFinancials($pdo, $orderId, $newStatus);
-        setFlash('success', 'অর্ডার স্ট্যাটাস আপডেট হয়েছে');
+        if ($newStatus === 'partial') {
+            if (!isset($_POST['note15_partial_csrf']) ||
+                !hash_equals($_SESSION['note15_partial_csrf'], (string)$_POST['note15_partial_csrf'])) {
+                throw new RuntimeException('নিরাপত্তা যাচাই ব্যর্থ হয়েছে। পেজ রিফ্রেশ করে আবার চেষ্টা করুন।');
+            }
+            $rawPaid = trim((string)($_POST['partial_delivery_paid'] ?? ''));
+            if (!preg_match('/\A(?:0|[1-9][0-9]{0,7})(?:\.[0-9]{1,2})?\z/D', $rawPaid)) {
+                throw new InvalidArgumentException('গ্রাহকের পরিশোধিত টাকা সঠিকভাবে লিখুন (সর্বোচ্চ ২ দশমিক)।');
+            }
+            resellApplyManualPartialDelivery($pdo, $orderId, (float)$rawPaid);
+            setFlash('success', 'Partial Amount সেভ হয়েছে; ব্যালেন্স থেকে কর্তন ও বকেয়া Due সমন্বয় হয়েছে।');
+        } else {
+            resellApplyOrderStatusFinancials($pdo, $orderId, $newStatus);
+            setFlash('success', 'অর্ডার স্ট্যাটাস আপডেট হয়েছে');
+        }
     } catch (Throwable $e) {
         setFlash('error', $e->getMessage());
     }
@@ -109,6 +127,10 @@ if (isset($_POST['update_customer'])) {
 
         $oldDeliveryCharge = (float)$currentOrder['delivery_charge'];
         $newDeliveryCharge = $manualDeliveryCharge;
+        // NOTE15: do not silently change a verified Partial debt's basis.
+        if ($currentOrder['status'] === 'partial' && abs($newDeliveryCharge - $oldDeliveryCharge) > 0.001) {
+            throw new Exception('পার্শিয়াল অর্ডারে ডেলিভারি চার্জ পরিবর্তনের আগে Courier হিসাব সমন্বয় করুন।');
+        }
         $newProfit = round((float)$currentOrder['reseller_price'] - ((float)$currentOrder['original_price'] + $newDeliveryCharge), 2);
         $newShortfall = resellShortfallAmount(
             (float)$currentOrder['original_price'],
@@ -168,6 +190,7 @@ $statusColors = [
     'shipped' => 'primary',
     'delivered' => 'success',
     'returned' => 'secondary',
+    'partial' => 'warning',
     'cancelled' => 'danger'
 ];
 
@@ -177,6 +200,7 @@ $statusLabels = [
     'shipped' => 'শিপড',
     'delivered' => 'ডেলিভার্ড',
     'returned' => 'রিটার্ন',
+    'partial' => 'পার্শিয়াল',
     'cancelled' => 'বাতিল'
 ];
 ?>
@@ -398,6 +422,17 @@ $statusLabels = [
                 </div>
             </div>
 
+            <?php if ($order['status'] === 'partial' && $order['partial_delivery_paid'] !== null): ?>
+            <div class="alert alert-warning">
+                গ্রাহক পরিশোধ করেছেন: <strong><?php echo formatPrice($order['partial_delivery_paid']); ?></strong>;
+                রিসেলার ব্যালেন্স থেকে কর্তন: <strong><?php echo formatPrice($order['partial_delivery_deducted']); ?></strong>;
+                এখনও Due: <strong><?php echo formatPrice($order['partial_delivery_due'] ?? 0); ?></strong>।
+                <small class="d-block mt-1">উৎস: <?php echo ($order['partial_delivery_source'] ?? '') === 'admin_manual' ? 'অ্যাডমিন (ম্যানুয়াল)' : 'কুরিয়ার API'; ?></small>
+            </div>
+            <?php elseif (($order['courier_status'] ?? '') === 'partial_delivered'): ?>
+            <div class="alert alert-info">কুরিয়ারে আংশিক ডেলিভারি হয়েছে, কিন্তু গ্রাহকের পরিশোধিত ডেলিভারি চার্জ যাচাই হয়নি। ব্যালেন্স কর্তন স্থগিত।</div>
+            <?php endif; ?>
+
             <!-- Status Update -->
             <div class="card mb-4">
                 <div class="card-header">
@@ -405,15 +440,28 @@ $statusLabels = [
                 </div>
                 <div class="card-body">
                     <form method="POST">
+                        <input type="hidden" name="note15_partial_csrf" value="<?php echo htmlspecialchars($_SESSION['note15_partial_csrf'], ENT_QUOTES, 'UTF-8'); ?>">
                         <div class="mb-3">
-                            <select name="status" class="form-select">
+                            <select name="status" class="form-select" id="note15StatusSelect">
                                 <option value="pending" <?php echo $order['status'] === 'pending' ? 'selected' : ''; ?>>পেন্ডিং</option>
                                 <option value="processing" <?php echo $order['status'] === 'processing' ? 'selected' : ''; ?>>প্রসেসিং</option>
                                 <option value="shipped" <?php echo $order['status'] === 'shipped' ? 'selected' : ''; ?>>শিপড</option>
                                 <option value="delivered" <?php echo $order['status'] === 'delivered' ? 'selected' : ''; ?>>ডেলিভার্ড</option>
+                                <option value="partial" <?php echo $order['status'] === 'partial' ? 'selected' : ''; ?>>পার্শিয়াল</option>
                                 <option value="returned" <?php echo $order['status'] === 'returned' ? 'selected' : ''; ?>>রিটার্ন</option>
                                 <option value="cancelled" <?php echo $order['status'] === 'cancelled' ? 'selected' : ''; ?>>বাতিল</option>
                             </select>
+                        </div>
+                        <div id="note15PartialPaymentBox" class="border rounded p-3 mb-3 bg-light" <?php echo $order['status'] === 'partial' ? '' : 'hidden'; ?>>
+                            <label class="form-label fw-semibold" for="note15PartialPaid">গ্রাহক ডেলিভারি চার্জ বাবদ কত টাকা দিয়েছেন? (৳)</label>
+                            <input type="number" class="form-control" name="partial_delivery_paid"
+                                id="note15PartialPaid" min="0.01" max="<?php echo htmlspecialchars(number_format(max(0, (float)$order['delivery_charge'] - 0.01), 2, '.', ''), ENT_QUOTES, 'UTF-8'); ?>"
+                                step="0.01" inputmode="decimal" placeholder="যেমন 50.00"
+                                value="<?php echo $order['partial_delivery_paid'] === null ? '' : htmlspecialchars(number_format((float)$order['partial_delivery_paid'], 2, '.', ''), ENT_QUOTES, 'UTF-8'); ?>">
+                            <small class="text-muted d-block mt-2">ডেলিভারি চার্জ: <strong><?php echo formatPrice($order['delivery_charge']); ?></strong>।
+                                পুরো চার্জ পরিশোধ হলে Partial নয়; 'ডেলিভার্ড' ব্যবহার করুন।
+                                নিচের Save বাটনে পুনরায় চাপলে Amount সংশোধন করা যাবে।</small>
+                            <div class="small mt-2" id="note15PartialPreview" aria-live="polite"></div>
                         </div>
                         <button type="submit" name="update_status" class="btn btn-primary w-100">
                             <i class="bi bi-check-lg me-1"></i> আপডেট করুন
@@ -421,6 +469,33 @@ $statusLabels = [
                     </form>
                 </div>
             </div>
+
+            <script>
+            (function () {
+                var status = document.getElementById('note15StatusSelect');
+                var box = document.getElementById('note15PartialPaymentBox');
+                var paid = document.getElementById('note15PartialPaid');
+                var preview = document.getElementById('note15PartialPreview');
+                var charge = <?php echo json_encode((float)$order['delivery_charge']); ?>;
+                if (!status || !box || !paid || !preview) return;
+                function refresh() {
+                    var isPartial = status.value === 'partial';
+                    box.hidden = !isPartial;
+                    paid.required = isPartial;
+                    if (!isPartial) return;
+                    var amount = Number(paid.value);
+                    if (paid.value === '' || !(amount > 0 && amount < charge)) {
+                        preview.textContent = '০ টাকার বেশি এবং পূর্ণ ডেলিভারি চার্জের কম টাকা লিখুন।';
+                        return;
+                    }
+                    preview.textContent = 'ঘাটতি: ৳' + (charge - amount).toFixed(2) +
+                        '। উপলব্ধ ব্যালেন্স অনুযায়ী কর্তন হবে; বাকিটা Due থাকবে।';
+                }
+                status.addEventListener('change', refresh);
+                paid.addEventListener('input', refresh);
+                refresh();
+            })();
+            </script>
 
             <!-- Order Timeline -->
             <div class="card">

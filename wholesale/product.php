@@ -71,6 +71,14 @@ include __DIR__ . '/../includes/header.php';
     .gallery-stage {
         position: relative;
         touch-action: pan-y;
+        -webkit-user-select: none;
+        user-select: none;
+        -webkit-touch-callout: none;
+    }
+    .gallery-stage img { -webkit-user-drag: none; user-select: none; }
+    @media (hover: none), (pointer: coarse) {
+        .gallery-stage .gallery-nav { display: none; }
+        .zoomContainer { display: none !important; pointer-events: none !important; }
     }
 
     .gallery-stage:focus {
@@ -628,17 +636,22 @@ function initWholesaleGalleryNavigation() {
     let touchStartX = 0;
     let touchStartY = 0;
 
+    stage.querySelectorAll('img').forEach(img => img.draggable = false);
+    stage.addEventListener('dragstart', function(event) { event.preventDefault(); });
+
     stage.addEventListener('touchstart', function(event) {
+        if (event.touches.length !== 1) return;
         const touch = event.changedTouches[0];
         touchStartX = touch.clientX;
         touchStartY = touch.clientY;
     }, { passive: true });
 
     stage.addEventListener('touchend', function(event) {
+        if (event.changedTouches.length !== 1) return;
         const touch = event.changedTouches[0];
         const deltaX = touch.clientX - touchStartX;
         const deltaY = touch.clientY - touchStartY;
-        if (Math.abs(deltaX) < 45 || Math.abs(deltaX) <= Math.abs(deltaY)) return;
+        if (Math.abs(deltaX) < 40 || Math.abs(deltaX) <= Math.abs(deltaY) * 1.15) return;
         deltaX < 0 ? wholesaleGalleryNext() : wholesaleGalleryPrev();
     }, { passive: true });
 
@@ -656,6 +669,12 @@ function initWholesaleGalleryNavigation() {
 // Image Zoom Functionality
 function initElevateZoom() {
     const img = document.getElementById('mainImage');
+    // ElevateZoom inserts a positioned overlay that intercepts mobile swipes.
+    // Keep zoom on desktop pointer devices only.
+    if (window.matchMedia('(hover: none), (pointer: coarse)').matches) {
+        if (typeof $ !== 'undefined') $('.zoomContainer').remove();
+        return;
+    }
     if (!img || typeof $ === 'undefined' || !$.fn.elevateZoom) return;
     
     function startZoom() {

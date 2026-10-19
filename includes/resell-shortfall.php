@@ -115,13 +115,132 @@ if (!function_exists('resellShortfallAmount')) {
     }
 
     /**
+     * NOTE15 Stage 2. Pure calculation. `deducted` is money ACTUALLY debited,
+     * never the desired charge and never the unpaid due amount.
+     */
+    function resellPartialReconciliation(float $charge, float $paid, float $deducted, float $available): array
+    {
+        $charge = round(max(0, $charge), 2);
+        $paid = round($paid, 2);
+        $deducted = round(max(0, $deducted), 2);
+        $available = round(max(0, $available), 2);
+        if (!is_finite($paid) || $charge <= 0 || $paid <= 0 || $paid >= $charge) {
+            throw new InvalidArgumentException('Partial হবে শুধু ডেলিভারি চার্জের কিছু টাকা পরিশোধ করলে (শূন্যের বেশি এবং পুরো চার্জের কম)।');
+        }
+        $required = round($charge - $paid, 2);
+        $refund = round(max(0, $deducted - $required), 2);
+        $debit = round(min($available, max(0, $required - $deducted)), 2);
+        $actualDeducted = round($deducted - $refund + $debit, 2);
+        return [
+            'required' => $required,
+            'debit' => $debit,
+            'refund' => $refund,
+            'deducted' => $actualDeducted,
+            'due' => round(max(0, $required - $actualDeducted), 2),
+        ];
+    }
+
+    /**
+     * Enter/update Partial using explicitly verified delivery-charge collection.
+     * Admin can override an automatically populated amount. Automatic sync must
+     * never overwrite the manual value. All changes & balance history are atomic.
+     * Returns false only when a courier update is inapplicable/overridden.
+     */
+    function resellApplyPartialDeliveryPayment(PDO $pdo, int $orderId, float $paid, string $source, bool $courierOnly = false): bool
+    {
+        if (!is_finite($paid) || $paid < 0) {
+            throw new InvalidArgumentException('অবৈধ Partial Amount।');
+        }
+        $paid = round($paid, 2);
+        $pdo->beginTransaction();
+        try {
+            $stmt = $pdo->prepare('SELECT * FROM resell_orders WHERE id = ? FOR UPDATE');
+            $stmt->execute([$orderId]);
+            $order = $stmt->fetch(PDO::FETCH_ASSOC);
+            if (!$order) {
+                throw new RuntimeException('অর্ডার পাওয়া যায়নি।');
+            }
+            if (!in_array((string)$order['status'], ['pending', 'processing', 'shipped', 'partial'], true)) {
+                if ($courierOnly) { $pdo->rollBack(); return false; }
+                throw new RuntimeException('Delivered/Returned/Cancelled অর্ডারে সরাসরি Partial প্রযোজ্য নয়।');
+            }
+            if ($courierOnly && ((string)($order['courier_status'] ?? '') !== 'partial_delivered'
+                || (string)($order['partial_delivery_source'] ?? '') === 'admin_manual')) {
+                $pdo->rollBack();
+                return false;
+            }
+            $charge = round((float)$order['delivery_charge'], 2);
+            if ($charge <= 0 || $paid <= 0 || $paid >= $charge) {
+                if ($courierOnly) { $pdo->rollBack(); return false; }
+                throw new InvalidArgumentException('আদায়কৃত টাকা অবশ্যই ০ টাকার বেশি এবং ডেলিভারি চার্জের কম হতে হবে।');
+            }
+
+            // Lock reseller after order. All debit/credit side effects use the
+            // same PDO connection and balance history inside this transaction.
+            $balStmt = $pdo->prepare('SELECT balance FROM resellers WHERE id = ? FOR UPDATE');
+            $balStmt->execute([(int)$order['reseller_id']]);
+            $available = $balStmt->fetchColumn();
+            if ($available === false) {
+                throw new RuntimeException('রিসেলারের ব্যালেন্স অ্যাকাউন্ট পাওয়া যায়নি।');
+            }
+            $oldPaid = $order['partial_delivery_paid'] === null ? null : round((float)$order['partial_delivery_paid'], 2);
+            $oldDeducted = round((float)($order['partial_delivery_deducted'] ?? 0), 2);
+            $calc = resellPartialReconciliation($charge, $paid, $oldDeducted, (float)$available);
+
+            if ($calc['refund'] > 0) {
+                resellBalanceOnlyCredit($pdo, (int)$order['reseller_id'], $calc['refund'],
+                    'অর্ডার #' . $order['order_number'] . ' Partial চার্জ সংশোধন - টাকা ফেরত',
+                    'partial_delivery', $orderId);
+            }
+            if ($calc['debit'] > 0) {
+                resellBalanceOnlyDebit($pdo, (int)$order['reseller_id'], $calc['debit'],
+                    'অর্ডার #' . $order['order_number'] . ' Partial ডেলিভারি চার্জ ঘাটতি',
+                    'partial_delivery', $orderId, true);
+            }
+            $pdo->prepare("UPDATE resell_orders SET status = 'partial',
+                partial_delivery_paid = ?, partial_delivery_deducted = ?, partial_delivery_due = ?,
+                partial_delivery_source = ?, partial_delivery_verified_at = NOW(),
+                updated_at = NOW() WHERE id = ?")
+                ->execute([$paid, $calc['deducted'], $calc['due'], $source, $orderId]);
+
+            // Journal even for zero monetary delta when admin changes an amount.
+            if ($oldPaid === null || abs($oldPaid - $paid) > 0.001 || $calc['debit'] > 0 || $calc['refund'] > 0
+                || (string)($order['partial_delivery_source'] ?? '') !== $source) {
+                $adminId = $source === 'admin_manual' ? (int)($_SESSION['admin_id'] ?? 0) : 0;
+                $pdo->prepare('INSERT INTO resell_partial_adjustment_history
+                    (order_id, reseller_id, admin_id, source, previous_paid, new_paid,
+                     debited, refunded, outstanding_due, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())')
+                    ->execute([$orderId, (int)$order['reseller_id'], $adminId > 0 ? $adminId : null,
+                        $source, $oldPaid, $paid, $calc['debit'], $calc['refund'], $calc['due']]);
+            }
+
+            $pdo->commit();
+            return true;
+        } catch (Throwable $e) {
+            if ($pdo->inTransaction()) { $pdo->rollBack(); }
+            throw $e;
+        }
+    }
+
+    function resellApplyManualPartialDelivery(PDO $pdo, int $orderId, float $paid): bool
+    {
+        return resellApplyPartialDeliveryPayment($pdo, $orderId, $paid, 'admin_manual', false);
+    }
+
+    function resellApplyVerifiedPartialDelivery(PDO $pdo, int $orderId, float $paid, string $source): bool
+    {
+        return resellApplyPartialDeliveryPayment($pdo, $orderId, $paid, $source, true);
+    }
+
+    /**
      * Apply one reseller order status transition with all balance side effects.
      * This is shared by admin manual status updates and courier status sync.
      */
     function resellApplyOrderStatusFinancials(PDO $pdo, int $orderId, string $newStatus): void
     {
         $newStatus = $newStatus === 'return' ? 'returned' : $newStatus;
-        $allowed = ['pending', 'processing', 'shipped', 'delivered', 'cancelled', 'returned'];
+        $allowed = ['pending', 'processing', 'shipped', 'delivered', 'cancelled', 'returned', 'partial'];
         if (!in_array($newStatus, $allowed, true)) {
             throw new Exception('অবৈধ অর্ডার স্ট্যাটাস');
         }
@@ -140,6 +259,12 @@ if (!function_exists('resellShortfallAmount')) {
             }
 
             $oldStatus = (string)$order['status'];
+            // Selecting Partial manually is safe only after a verified, recorded
+            // collection; otherwise courier 'partial_delivered' is ambiguous.
+            if ($newStatus === 'partial' && $oldStatus !== 'partial'
+                && ($order['partial_delivery_paid'] === null || $order['courier_status'] !== 'partial_delivered')) {
+                throw new Exception('Partial করতে অর্ডার বিবরণ পেজ থেকে গ্রাহকের পরিশোধিত ডেলিভারি চার্জ লিখে সেভ করুন।');
+            }
             if ($oldStatus === $newStatus) {
                 if ($ownsTransaction) {
                     $pdo->commit();
@@ -156,6 +281,26 @@ if (!function_exists('resellShortfallAmount')) {
 
             $oldTerminal = in_array($oldStatus, ['cancelled', 'returned'], true);
             $newTerminal = in_array($newStatus, ['cancelled', 'returned'], true);
+
+            // Reverse ONLY NOTE15's courier shortage when switching away from
+            // Partial. Existing order shortfall/return-profit logic remains intact.
+            if ($oldStatus === 'partial' && $newStatus !== 'partial') {
+                $partialDeducted = round((float)($order['partial_delivery_deducted'] ?? 0), 2);
+                if ($partialDeducted > 0) {
+                    resellBalanceOnlyCredit($pdo, (int)$order['reseller_id'], $partialDeducted,
+                        'অর্ডার #' . $order['order_number'] . ' Partial চার্জ ফেরত/স্ট্যাটাস সমন্বয়',
+                        'partial_delivery', $orderId);
+                }
+                $pdo->prepare("UPDATE resell_orders SET partial_delivery_deducted = 0, partial_delivery_due = 0,
+                    partial_delivery_paid = NULL, partial_delivery_source = NULL,
+                    partial_delivery_verified_at = NULL WHERE id = ?")->execute([$orderId]);
+                $pdo->prepare('INSERT INTO resell_partial_adjustment_history
+                    (order_id, reseller_id, admin_id, source, previous_paid, new_paid,
+                     debited, refunded, outstanding_due, created_at)
+                    VALUES (?, ?, NULL, ?, ?, 0, 0, ?, 0, NOW())')
+                    ->execute([$orderId, (int)$order['reseller_id'], 'status_clear:' . $newStatus,
+                        $order['partial_delivery_paid'], $partialDeducted]);
+            }
 
             // If a returned order is re-opened/moved elsewhere, first refund the
             // one-time return delivery charge so the order can be re-evaluated cleanly.

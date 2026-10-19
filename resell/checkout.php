@@ -97,6 +97,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 if (!array_key_exists($item['id'], $sellingPrices) || trim((string)$sellingPrices[$item['id']]) === '') {
                     throw new Exception($product['name'] . ' - বিক্রয় মূল্য দিন');
                 }
+                if (!is_scalar($sellingPrices[$item['id']]) || !is_numeric($sellingPrices[$item['id']]) || !is_finite((float)$sellingPrices[$item['id']])) {
+                    throw new Exception($product['name'] . ' - সঠিক বিক্রয় মূল্য দিন');
+                }
                 $sellingPrice = (float)$sellingPrices[$item['id']];
                 if ($sellingPrice < 0) {
                     throw new Exception($product['name'] . ' - বিক্রয় মূল্য ঋণাত্মক হতে পারবে না');
@@ -215,16 +218,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 }
 
 $baseTotal = 0.0;
-$defaultSaleTotal = 0.0;
+$enteredSaleTotal = 0.0;
+$allPricesEntered = ($_SERVER['REQUEST_METHOD'] === 'POST');
 foreach ($cartItems as $item) {
     $qty = (int)$item['quantity'];
     $baseTotal += (float)$item['reseller_price'] * $qty;
-    $defaultPrice = (float)($item['suggested_selling_price'] ?: $item['reseller_price']);
-    $defaultSaleTotal += $defaultPrice * $qty;
+    $enteredPrice = $_POST['selling_price'][$item['id']] ?? null;
+    if ($enteredPrice === null || trim((string)$enteredPrice) === '' || !is_numeric($enteredPrice)) {
+        $allPricesEntered = false;
+    } else {
+        $enteredSaleTotal += (float)$enteredPrice * $qty;
+    }
+}
+$selectedDeliveryCharge = null;
+foreach ($deliveryCharges as $dc) {
+    if ((int)$dc['id'] === (int)($_POST['delivery_charge_id'] ?? 0)) {
+        $selectedDeliveryCharge = (float)$dc['charge'];
+        break;
+    }
 }
 $initialDeliveryCharge = $forcedCustomCharge !== null
     ? $forcedCustomCharge
-    : (!empty($deliveryCharges) ? (float)$deliveryCharges[0]['charge'] : 0.0);
+    : ($selectedDeliveryCharge ?? (!empty($deliveryCharges) ? (float)$deliveryCharges[0]['charge'] : 0.0));
 
 include __DIR__ . '/includes/header.php';
 ?>
@@ -285,7 +300,7 @@ include __DIR__ . '/includes/header.php';
                     <?php foreach ($cartItems as $item): ?>
                     <?php
                         $variation = json_decode($item['variation'] ?? '', true) ?: [];
-                        $suggested = (float)($item['suggested_selling_price'] ?: $item['reseller_price']);
+                        $enteredPrice = $_POST['selling_price'][$item['id']] ?? '';
                     ?>
                     <div class="checkout-item" data-base-price="<?php echo (float)$item['reseller_price']; ?>" data-qty="<?php echo (int)$item['quantity']; ?>">
                         <img src="<?php echo imageUrl($item['image']); ?>" alt="">
@@ -303,7 +318,7 @@ include __DIR__ . '/includes/header.php';
                         <div class="qty-col"><strong><?php echo (int)$item['quantity']; ?> পিস</strong></div>
                         <div class="sale-col">
                             <label class="form-label small mb-1">বিক্রয় মূল্য / পিস</label>
-                            <input type="number" step="0.01" min="0" name="selling_price[<?php echo $item['id']; ?>]" class="form-control selling-price" value="<?php echo htmlspecialchars((string)$suggested); ?>" required>
+                            <input type="number" step="0.01" min="0" name="selling_price[<?php echo $item['id']; ?>]" class="form-control selling-price" value="<?php echo htmlspecialchars((string)$enteredPrice, ENT_QUOTES, 'UTF-8'); ?>" placeholder="মূল্য লিখুন" inputmode="decimal" required>
                         </div>
                     </div>
                     <?php endforeach; ?>
@@ -348,9 +363,9 @@ include __DIR__ . '/includes/header.php';
                     <div class="summary-row"><span>পণ্য মূল্য</span><strong id="productTotal"><?php echo formatPrice($baseTotal); ?></strong></div>
                     <div class="summary-row"><span>ডেলিভারি চার্জ</span><strong id="deliveryCharge"><?php echo formatPrice($initialDeliveryCharge); ?></strong></div>
                     <div class="summary-row"><span>মোট খরচ</span><strong id="totalCost"><?php echo formatPrice($baseTotal + $initialDeliveryCharge); ?></strong></div>
-                    <div class="summary-row"><span>কাস্টমারের মোট বিক্রয় মূল্য</span><strong id="resellerTotal"><?php echo formatPrice($defaultSaleTotal); ?></strong></div>
-                    <div class="summary-row"><span>ব্যালেন্স থেকে কর্তন</span><strong id="shortfallAmount"><?php echo formatPrice(max(0, ($baseTotal + $initialDeliveryCharge) - $defaultSaleTotal)); ?></strong></div>
-                    <div class="summary-row final"><span>আপনার প্রফিট</span><strong id="profitAmount" class="<?php echo $defaultSaleTotal >= ($baseTotal + $initialDeliveryCharge) ? 'profit-positive' : 'profit-negative'; ?>"><?php echo formatPrice($defaultSaleTotal - ($baseTotal + $initialDeliveryCharge)); ?></strong></div>
+                    <div class="summary-row"><span>কাস্টমারের মোট বিক্রয় মূল্য</span><strong id="resellerTotal"><?php echo $allPricesEntered ? formatPrice($enteredSaleTotal + $initialDeliveryCharge) : '—'; ?></strong></div>
+                    <div class="summary-row"><span>ব্যালেন্স থেকে কর্তন</span><strong id="shortfallAmount"><?php echo $allPricesEntered ? formatPrice(max(0, ($baseTotal + $initialDeliveryCharge) - $enteredSaleTotal)) : '—'; ?></strong></div>
+                    <div class="summary-row final"><span>আপনার প্রফিট</span><strong id="profitAmount" class="<?php echo $allPricesEntered ? ($enteredSaleTotal >= ($baseTotal + $initialDeliveryCharge) ? 'profit-positive' : 'profit-negative') : ''; ?>"><?php echo $allPricesEntered ? formatPrice($enteredSaleTotal - ($baseTotal + $initialDeliveryCharge)) : '—'; ?></strong></div>
                     <button type="submit" class="btn btn-primary w-100 py-3 mt-3 fw-bold" <?php echo $currentBalance < $minBalance ? 'disabled' : ''; ?>><i class="bi bi-check-circle me-2"></i>অর্ডার কনফার্ম করুন</button>
                 </div>
             </div>
@@ -370,23 +385,38 @@ function currentDeliveryCharge() {
 function recalculateCheckout() {
     let baseTotal = 0;
     let saleTotal = 0;
+    let allPricesEntered = true;
     document.querySelectorAll('.checkout-item').forEach(row => {
         const qty = Number(row.dataset.qty) || 1;
         const base = Number(row.dataset.basePrice) || 0;
-        const sale = Number(row.querySelector('.selling-price')?.value) || 0;
+        const inputValue = row.querySelector('.selling-price')?.value.trim() ?? '';
         baseTotal += base * qty;
-        saleTotal += sale * qty;
+        if (inputValue === '' || !Number.isFinite(Number(inputValue)) || Number(inputValue) < 0) {
+            allPricesEntered = false;
+        } else {
+            saleTotal += Number(inputValue) * qty;
+        }
     });
     const delivery = currentDeliveryCharge();
     const cost = baseTotal + delivery;
-    const profit = saleTotal - cost;
-    const shortfall = Math.max(0, cost - saleTotal);
     document.getElementById('productTotal').textContent = formatResellMoney(baseTotal);
     document.getElementById('deliveryCharge').textContent = formatResellMoney(delivery);
     document.getElementById('totalCost').textContent = formatResellMoney(cost);
-    document.getElementById('resellerTotal').textContent = formatResellMoney(saleTotal);
-    document.getElementById('shortfallAmount').textContent = formatResellMoney(shortfall);
     const profitEl = document.getElementById('profitAmount');
+    if (!allPricesEntered) {
+        ['resellerTotal', 'shortfallAmount'].forEach(id => {
+            document.getElementById(id).textContent = '—';
+        });
+        profitEl.textContent = '—';
+        profitEl.className = '';
+        return;
+    }
+    // The customer's bill includes the selected delivery charge. The existing
+    // reseller profit/shortfall policy is preserved for this UI-only revision.
+    const profit = saleTotal - cost;
+    const shortfall = Math.max(0, cost - saleTotal);
+    document.getElementById('resellerTotal').textContent = formatResellMoney(saleTotal + delivery);
+    document.getElementById('shortfallAmount').textContent = formatResellMoney(shortfall);
     profitEl.textContent = formatResellMoney(profit);
     profitEl.className = profit >= 0 ? 'profit-positive' : 'profit-negative';
 }

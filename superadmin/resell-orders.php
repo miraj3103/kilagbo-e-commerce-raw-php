@@ -16,6 +16,11 @@ if (isset($_POST['update_status'])) {
     $orderId = intval($_POST['order_id']);
     $newStatus = sanitize($_POST['status']);
 
+    if ($newStatus === 'partial') {
+        setFlash('info', 'Partial করতে অর্ডার বিবরণ পেজে গ্রাহকের পরিশোধিত Amount লিখুন।');
+        redirect(adminUrl('resell-order-view/' . $orderId));
+    }
+
     try {
         resellApplyOrderStatusFinancials($pdo, $orderId, $newStatus);
         setFlash('success', 'অর্ডার স্ট্যাটাস আপডেট হয়েছে');
@@ -202,6 +207,7 @@ $stats = $pdo->query("SELECT
                         <option value="processing" <?php echo $status === 'processing' ? 'selected' : ''; ?>>প্রসেসিং</option>
                         <option value="shipped" <?php echo $status === 'shipped' ? 'selected' : ''; ?>>শিপড</option>
                         <option value="delivered" <?php echo $status === 'delivered' ? 'selected' : ''; ?>>ডেলিভার্ড</option>
+                        <option value="partial" <?php echo $status === 'partial' ? 'selected' : ''; ?>>পার্শিয়াল</option>
                         <option value="returned" <?php echo $status === 'returned' ? 'selected' : ''; ?>>রিটার্ন</option>
                         <option value="cancelled" <?php echo $status === 'cancelled' ? 'selected' : ''; ?>>বাতিল</option>
                     </select>
@@ -288,16 +294,25 @@ $stats = $pdo->query("SELECT
                                 <td>
                                     <form method="POST" class="d-inline">
                                         <input type="hidden" name="order_id" value="<?php echo $order['id']; ?>">
-                                        <select name="status" class="form-select form-select-sm" style="width: auto;" onchange="this.form.submit()">
+                                        <select name="status" class="form-select form-select-sm" style="width: auto;"
+                                            data-detail-url="<?php echo htmlspecialchars(adminUrl('resell-order-view/' . $order['id']), ENT_QUOTES, 'UTF-8'); ?>"
+                                            onchange="if (this.value === 'partial') { window.location.href = this.dataset.detailUrl; } else { this.form.submit(); }">
                                             <option value="pending" <?php echo $order['status'] === 'pending' ? 'selected' : ''; ?>>পেন্ডিং</option>
                                             <option value="processing" <?php echo $order['status'] === 'processing' ? 'selected' : ''; ?>>প্রসেসিং</option>
                                             <option value="shipped" <?php echo $order['status'] === 'shipped' ? 'selected' : ''; ?>>শিপড</option>
                                             <option value="delivered" <?php echo $order['status'] === 'delivered' ? 'selected' : ''; ?>>ডেলিভার্ড</option>
+                                            <option value="partial" <?php echo $order['status'] === 'partial' ? 'selected' : ''; ?>>পার্শিয়াল</option>
                                             <option value="returned" <?php echo $order['status'] === 'returned' ? 'selected' : ''; ?>>রিটার্ন</option>
                                             <option value="cancelled" <?php echo $order['status'] === 'cancelled' ? 'selected' : ''; ?>>বাতিল</option>
                                         </select>
                                         <input type="hidden" name="update_status" value="1">
                                     </form>
+                                    <?php if ($order['status'] === 'partial' && $order['partial_delivery_paid'] !== null): ?>
+                                    <small class="d-block text-danger mt-1">ডেলিভারি চার্জ আদায়: <?php echo formatPrice($order['partial_delivery_paid']); ?>; কর্তন: <?php echo formatPrice($order['partial_delivery_deducted']); ?>; Due: <?php echo formatPrice($order['partial_delivery_due'] ?? 0); ?></small>
+                                    <?php endif; ?>
+                                    <?php if (($order['courier_status'] ?? '') === 'partial_delivered' && $order['status'] !== 'partial'): ?>
+                                    <small class="d-block text-warning mt-1">আংশিক ডেলিভারি; আদায়কৃত চার্জ যাচাই হয়নি</small>
+                                    <?php endif; ?>
                                     <?php if (!empty($order['courier_status'])): ?>
                                     <span class="badge bg-light text-dark border mt-1"><i class="bi bi-truck me-1"></i><?php echo steadfastCourierStatusLabel($order['courier_status']); ?></span>
                                     <?php endif; ?>

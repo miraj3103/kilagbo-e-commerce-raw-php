@@ -332,10 +332,6 @@
 
 <!-- Mobile Sticky Navbar -->
 <div class="mobile-sticky-navbar d-lg-none">
-    <a href="<?php echo baseUrl('shop'); ?>" class="nav-item <?php echo (isset($currentPage) && $currentPage == 'shop') ? 'active' : ''; ?>">
-        <i class="bi bi-shop"></i>
-        <span>শপ</span>
-    </a>
     <a href="<?php echo baseUrl('wishlist'); ?>" class="nav-item <?php echo (isset($currentPage) && $currentPage == 'wishlist') ? 'active' : ''; ?>">
         <div class="icon-wrapper">
             <i class="bi bi-heart"></i>
@@ -382,11 +378,14 @@
     display: flex;
     flex-direction: column;
     align-items: center;
+    justify-content: center;
+    gap: 3px;
     text-decoration: none;
     color: #666;
-    font-size: 0.75rem;
+    font-size: 0.78rem;
     font-weight: 500;
-    width: 25%;
+    flex: 1 1 33.333%;
+    min-width: 0;
     position: relative;
     transition: all 0.3s ease;
 }
