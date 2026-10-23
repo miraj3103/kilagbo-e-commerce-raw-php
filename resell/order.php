@@ -138,12 +138,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     } else {
                         $onlinePaymentDiscount = $discountValue;
                     }
-                    $totalCost = max(0, $totalCost - $onlinePaymentDiscount);
+                    $onlinePaymentDiscount = min($totalCost, max(0, $onlinePaymentDiscount));
+                    $totalCost -= $onlinePaymentDiscount;
                 }
             }
 
-            $profit = round($totalResellerPrice - $totalCost, 2);
-            $shortfall = round(max(0, $totalCost - $totalResellerPrice), 2);
+            // NOTE16: item selling price excludes delivery. The customer's total bill
+            // includes it once, so delivery is not removed from reseller profit.
+            $customerBill = $totalResellerPrice + $deliveryCharge;
+            $profit = round($customerBill - $totalCost, 2);
+            $shortfall = round(max(0, $totalCost - $customerBill), 2);
             if ($shortfall > $lockedBalance) {
                 throw new Exception('এই কম/শূন্য বিক্রয় মূল্যের জন্য ব্যালেন্সে পর্যাপ্ত টাকা নেই। ঘাটতি: ' . formatPrice($shortfall) . ', বর্তমান ব্যালেন্স: ' . formatPrice($lockedBalance));
             }
@@ -167,8 +171,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 INSERT INTO resell_orders
                 (order_number, reseller_id, customer_name, customer_phone, customer_email, shipping_address, shipping_area,
                  original_price, delivery_charge, reseller_price, profit, shortfall_amount, shortfall_deducted, shortfall_refunded,
-                 notes, payment_method, payment_type, payment_number, transaction_id, payment_status)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 notes, payment_method, payment_type, payment_number, transaction_id, payment_status,
+                 pricing_version, checkout_discount)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ");
             $stmt->execute([
                 $orderNumber,
@@ -190,7 +195,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $onlinePaymentType,
                 $paymentNumber,
                 $transactionId,
-                $paymentStatus
+                $paymentStatus,
+                2,
+                $onlinePaymentDiscount
             ]);
             $orderId = (int)$pdo->lastInsertId();
 
@@ -409,7 +416,7 @@ include __DIR__ . '/includes/header.php';
                         </div>
                         <div class="col-md-6">
                             <label class="form-label">আপনার বিক্রয় মূল্য (প্রতি পিস) *</label>
-                            <input type="number" class="form-control" name="reseller_price" id="resellerPrice" placeholder="যেমন: ৫০০" value="<?php echo $product['suggested_selling_price'] ?: ''; ?>" min="0" step="0.01" required>
+                            <input type="number" class="form-control" name="reseller_price" id="resellerPrice" autocomplete="off" placeholder="যেমন: ৫০০" value="<?php echo htmlspecialchars((string)($_POST['reseller_price'] ?? ''), ENT_QUOTES, 'UTF-8'); ?>" min="0" step="0.01" required>
                         </div>
                     </div>
                 </div>
@@ -490,16 +497,16 @@ include __DIR__ . '/includes/header.php';
                         <span id="totalCost"><?php echo formatPrice($product['reseller_price'] + $initialDeliveryCharge); ?></span>
                     </div>
                     <div class="calc-row">
-                        <span>আপনার বিক্রয় মূল্য:</span>
-                        <span id="resellerTotal">৳০</span>
+                        <span>কাস্টমারের মোট বিক্রয় মূল্য:</span>
+                        <span id="resellerTotal">—</span>
                     </div>
                     <div class="calc-row">
                         <span>ব্যালেন্স থেকে কর্তন:</span>
-                        <span id="shortfallAmount">৳০</span>
+                        <span id="shortfallAmount">—</span>
                     </div>
                     <div class="calc-row profit">
                         <span>আপনার প্রফিট:</span>
-                        <span id="profitAmount" class="profit-negative">৳০</span>
+                        <span id="profitAmount">—</span>
                     </div>
                 </div>
 
@@ -516,6 +523,13 @@ include __DIR__ . '/includes/header.php';
 </div>
 
 <script>
+const note16DiscountType = <?php echo json_encode(getSettings('online_payment_discount_type_resell') ?? 'fixed'); ?>;
+const note16DiscountValue = <?php echo json_encode((float)(getSettings('online_payment_discount_value_resell') ?? 0)); ?>;
+function note16EffectiveCost(cost) {
+    if (document.querySelector('input[name="payment_method"]:checked')?.value !== 'online') return cost;
+    const raw = note16DiscountType === 'percentage' ? cost * note16DiscountValue / 100 : note16DiscountValue;
+    return cost - Math.min(cost, Math.max(0, raw));
+}
 const productPrice = <?php echo $product['reseller_price']; ?>;
 const hasCustomCharge = <?php echo $hasCustomCharge ? 'true' : 'false'; ?>;
 const customDeliveryCharge = <?php echo $hasCustomCharge ? $customDeliveryCharge : 0; ?>;
@@ -543,22 +557,26 @@ function calculate() {
     const deliveryCharge = getSelectedDeliveryCharge();
 
     const productTotal = productPrice * quantity;
-    const totalCost = productTotal + deliveryCharge;
+    const totalCost = note16EffectiveCost(productTotal + deliveryCharge);
     const resellerTotal = resellerPrice * quantity;
-    const profit = resellerTotal - totalCost;
-    const shortfall = Math.max(0, totalCost - resellerTotal);
+    const customerBill = resellerTotal + deliveryCharge;
+    const profit = customerBill - totalCost;
+    const shortfall = Math.max(0, totalCost - customerBill);
 
     document.getElementById('productTotal').textContent = formatPrice(productTotal);
     document.getElementById('deliveryCharge').textContent = formatPrice(deliveryCharge);
     document.getElementById('totalCost').textContent = formatPrice(totalCost);
-    document.getElementById('resellerTotal').textContent = formatPrice(resellerTotal);
-    document.getElementById('shortfallAmount').textContent = formatPrice(shortfall);
-    document.getElementById('profitAmount').textContent = formatPrice(profit);
-    document.getElementById('profitAmount').className = profit >= 0 ? 'profit-positive' : 'profit-negative';
+    const priceInput = document.getElementById('resellerPrice').value.trim();
+    const isValid = priceInput !== '' && Number.isFinite(Number(priceInput)) && Number(priceInput) >= 0;
+    document.getElementById('resellerTotal').textContent = isValid ? formatPrice(customerBill) : '—';
+    document.getElementById('shortfallAmount').textContent = isValid ? formatPrice(shortfall) : '—';
+    document.getElementById('profitAmount').textContent = isValid ? formatPrice(profit) : '—';
+    document.getElementById('profitAmount').className = isValid ? (profit >= 0 ? 'profit-positive' : 'profit-negative') : '';
 }
 
 document.getElementById('quantity').addEventListener('input', calculate);
 document.getElementById('resellerPrice').addEventListener('input', calculate);
+document.querySelectorAll('input[name="payment_method"]').forEach(input => input.addEventListener('change', calculate));
 
 // Add listener for delivery charge select if it exists
 const deliverySelect = document.getElementById('deliveryChargeSelect');

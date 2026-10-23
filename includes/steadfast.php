@@ -122,7 +122,47 @@ if (!function_exists('steadfastOrderConfig')) {
         return $order ?: null;
     }
 
-    function steadfastBuildPayload(string $type, array $order): ?array
+    /**
+     * Steadfast 'invoice' must be UNIQUE and limited to letters/digits/-/_;
+     * product name alone may repeat or contain Bangla. Display an ASCII product
+     * slug + the unique existing order reference, keeping a reliable cross-reference.
+     * The exact, UTF-8 product names are also sent as item_description.
+     */
+    function steadfastResellCourierFields(PDO $pdo, int $orderId, string $orderNumber): array
+    {
+        $stmt = $pdo->prepare('SELECT product_name, quantity FROM resell_order_items WHERE order_id = ? ORDER BY id');
+        $stmt->execute([$orderId]);
+        $items = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        if (!$items) {
+            return ['invoice' => $orderNumber, 'item_description' => null, 'total_lot' => null];
+        }
+        $itemParts = [];
+        $lots = 0;
+        foreach ($items as $item) {
+            $productName = trim((string)($item['product_name'] ?? ''));
+            $quantity = max(1, (int)($item['quantity'] ?? 1));
+            $lots += $quantity;
+            if ($productName !== '') {
+                $itemParts[] = $productName . ($quantity > 1 ? ' x' . $quantity : '');
+            }
+        }
+        $firstName = trim((string)($items[0]['product_name'] ?? ''));
+        $asciiName = @iconv('UTF-8', 'ASCII//TRANSLIT//IGNORE', $firstName);
+        if (!is_string($asciiName) || $asciiName === '') $asciiName = $firstName;
+        $slug = preg_replace('/[^A-Za-z0-9]+/', '-', $asciiName);
+        $slug = trim((string)$slug, '-');
+        if ($slug === '') $slug = 'Product';
+        $slug = substr($slug, 0, 40);
+        // Suffix disambiguates two orders with the same product name.
+        $invoice = $slug . '-' . $orderNumber;
+        return [
+            'invoice' => $invoice,
+            'item_description' => $itemParts ? mb_substr(implode(' | ', $itemParts), 0, 250) : null,
+            'total_lot' => $lots ?: null,
+        ];
+    }
+
+    function steadfastBuildPayload(string $type, array $order, ?PDO $pdo = null): ?array
     {
         $config = steadfastOrderConfig($type);
         if (!$config) {
@@ -140,7 +180,22 @@ if (!function_exists('steadfastOrderConfig')) {
             return null;
         }
 
-        return [
+        $itemDescription = null;
+        $totalLot = null;
+        if ($type === 'resell' && $pdo !== null) {
+            $fields = steadfastResellCourierFields($pdo, (int)$order['id'], $invoice);
+            $invoice = $fields['invoice'];
+            $itemDescription = $fields['item_description'];
+            $totalLot = $fields['total_lot'];
+            // The stored reseller_price is ITEMS ONLY, not the customer bill.
+            // COD customers must pay the single shipment delivery charge too.
+            if ((int)($order['pricing_version'] ?? 1) >= 2
+                && ($order['payment_method'] ?? 'cod') === 'cod') {
+                $amount += (float)($order['delivery_charge'] ?? 0);
+            }
+        }
+
+        $payload = [
             'invoice' => $invoice,
             'recipient_name' => mb_substr($name, 0, 100),
             'recipient_phone' => $phone,
@@ -148,16 +203,42 @@ if (!function_exists('steadfastOrderConfig')) {
             'cod_amount' => max(0, $amount),
             'note' => $note !== '' ? mb_substr($note, 0, 500) : null,
         ];
+        if ($type === 'resell') {
+            if ($itemDescription !== null) $payload['item_description'] = $itemDescription;
+            if ($totalLot !== null) $payload['total_lot'] = $totalLot;
+        }
+        return $payload;
     }
 
-    /** Public customer tracking URL. The /t/{code} pattern is used by Steadfast shipping plugins. */
-    function steadfastTrackingUrl(string $trackingCode): ?string
+    /**
+     * A valid public /tl/ link contains an opaque token that CANNOT be computed
+     * from the tracking_code. Never fabricate /t/{tracking_code} as a link.
+     * Accept a direct URL only when Steadfast explicitly provides the token.
+     */
+    function steadfastTrackingUrl(?string $candidate): ?string
     {
-        $trackingCode = trim($trackingCode);
-        if (!preg_match('/\A[A-Za-z0-9_-]{4,100}\z/', $trackingCode)) {
+        if ($candidate === null) return null;
+        $candidate = trim($candidate);
+        $parsed = parse_url($candidate);
+        if (!is_array($parsed) || strtolower((string)($parsed['scheme'] ?? '')) !== 'https'
+            || !in_array(strtolower((string)($parsed['host'] ?? '')), ['steadfast.com.bd', 'www.steadfast.com.bd'], true)
+            || isset($parsed['user']) || isset($parsed['pass']) || isset($parsed['port'])
+            || isset($parsed['query']) || isset($parsed['fragment'])
+            || !preg_match('~\A/tl/[A-Za-z0-9_-]{8,180}/?\z~D', (string)($parsed['path'] ?? ''))) {
             return null;
         }
-        return 'https://steadfast.com.bd/t/' . rawurlencode($trackingCode);
+        return $candidate;
+    }
+
+    function steadfastTrackingLinkFromResponse(array $response): ?string
+    {
+        foreach (['tracking_link', 'tracking_url', 'public_tracking_link', 'public_tracking_url'] as $field) {
+            if (isset($response[$field]) && is_string($response[$field])) {
+                $url = steadfastTrackingUrl($response[$field]);
+                if ($url !== null) return $url;
+            }
+        }
+        return null;
     }
 
     /**
@@ -183,7 +264,7 @@ if (!function_exists('steadfastOrderConfig')) {
         return null;
     }
 
-    function steadfastMarkSent(PDO $pdo, string $type, int $orderId, $consignmentId, string $trackingCode, string $courierStatus = 'in_review'): void
+    function steadfastMarkSent(PDO $pdo, string $type, int $orderId, $consignmentId, string $trackingCode, string $courierStatus = 'in_review', ?string $confirmedTrackingLink = null): void
     {
         $config = steadfastOrderConfig($type);
         if (!$config) {
@@ -199,12 +280,24 @@ if (!function_exists('steadfastOrderConfig')) {
             $sql .= ", courier_name = 'Steadfast', tracking_id = ?";
             $params = [$consignmentId, $trackingCode, $courierStatus, $trackingCode];
         } elseif ($type === 'resell') {
-            // Preserve an existing manual link; populate automatically on new bookings.
-            $sql .= ", tracking_link = CASE WHEN tracking_link IS NULL OR tracking_link = '' OR tracking_link LIKE 'https://steadfast.com.bd/t/%' THEN ? ELSE tracking_link END";
-            $params = [$consignmentId, $trackingCode, $courierStatus, steadfastTrackingUrl($trackingCode)];
+            // Replace known fabricated /t/code links ONLY when a real /tl/ URL
+            // is explicitly supplied by courier. Never overwrite an admin's /tl/ link.
+            $link = steadfastTrackingUrl($confirmedTrackingLink);
+            if ($link !== null) {
+                $sql .= ", tracking_link = CASE WHEN tracking_link IS NULL OR tracking_link = '' OR tracking_link LIKE 'https://steadfast.com.bd/t/%' THEN ? ELSE tracking_link END";
+                $params = [$consignmentId, $trackingCode, $courierStatus, $link];
+            } else {
+                $params = [$consignmentId, $trackingCode, $courierStatus];
+            }
         } elseif ($type === 'affiliate') {
-            $sql .= ", tracking_link = COALESCE(NULLIF(tracking_link, ''), ?)";
-            $params = [$consignmentId, $trackingCode, $courierStatus, steadfastTrackingUrl($trackingCode)];
+            // Keep affiliate behavior otherwise unchanged; no fabricated links.
+            $link = steadfastTrackingUrl($confirmedTrackingLink);
+            if ($link !== null) {
+                $sql .= ", tracking_link = COALESCE(NULLIF(tracking_link, ''), ?)";
+                $params = [$consignmentId, $trackingCode, $courierStatus, $link];
+            } else {
+                $params = [$consignmentId, $trackingCode, $courierStatus];
+            }
         } else {
             $params = [$consignmentId, $trackingCode, $courierStatus];
         }
@@ -257,7 +350,7 @@ if (!function_exists('steadfastOrderConfig')) {
                 continue;
             }
 
-            $payload = steadfastBuildPayload($type, $order);
+            $payload = steadfastBuildPayload($type, $order, $pdo);
             if (!$payload) {
                 $result['failed']++;
                 $result['errors'][] = ($order[$config['number_column']] ?? $key) . ' - কাস্টমার/ঠিকানা/ফোন তথ্য অসম্পূর্ণ';
@@ -289,7 +382,9 @@ if (!function_exists('steadfastOrderConfig')) {
                         $item['id'],
                         $consignment['consignment_id'],
                         (string)($consignment['tracking_code'] ?? ''),
-                        (string)($consignment['status'] ?? 'in_review')
+                        (string)($consignment['status'] ?? 'in_review'),
+                        steadfastTrackingLinkFromResponse($consignment)
+                            ?? steadfastTrackingLinkFromResponse((array)($api['data'] ?? []))
                     );
                     $result['sent']++;
                 } else {
@@ -335,7 +430,8 @@ if (!function_exists('steadfastOrderConfig')) {
                         $item['id'],
                         $row['consignment_id'],
                         (string)($row['tracking_code'] ?? ''),
-                        'in_review'
+                        'in_review',
+                        steadfastTrackingLinkFromResponse($row)
                     );
                     $result['sent']++;
                 } else {
@@ -508,11 +604,11 @@ if (!function_exists('steadfastOrderConfig')) {
         $api = steadfastRequest('GET', $path);
         $status = $api['data']['delivery_status'] ?? null;
         if ($api['ok'] && $status) {
-            // Self-heal tracking links for older consignments (requires NOTE15 migration).
-            if ($type === 'resell' && empty($order['tracking_link']) && !empty($order['steadfast_tracking_code'])) {
-                $url = steadfastTrackingUrl((string)$order['steadfast_tracking_code']);
+            // Only self-heal with a confirmed courier-provided public /tl/ URL.
+            if ($type === 'resell') {
+                $url = steadfastTrackingLinkFromResponse((array)($api['data'] ?? []));
                 if ($url !== null) {
-                    $pdo->prepare("UPDATE resell_orders SET tracking_link = ? WHERE id = ? AND (tracking_link IS NULL OR tracking_link = '')")
+                    $pdo->prepare("UPDATE resell_orders SET tracking_link = ? WHERE id = ? AND (tracking_link IS NULL OR tracking_link = '' OR tracking_link LIKE 'https://steadfast.com.bd/t/%')")
                         ->execute([$url, $orderId]);
                 }
             }

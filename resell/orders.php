@@ -243,7 +243,7 @@ include __DIR__ . '/includes/header.php';
                         <strong><?php echo sanitize($order['customer_name']); ?></strong><br>
                         <small class="text-muted"><?php echo $order['customer_phone']; ?></small>
                     </td>
-                    <td><?php echo formatPrice($order['reseller_price']); ?></td>
+                    <td><?php echo formatPrice($order['reseller_price'] + $order['delivery_charge']); ?></td>
                     <td>
                         <?php 
                         $isCancelled = in_array($order['status'], ['cancelled', 'returned', 'rejected', 'failed']);

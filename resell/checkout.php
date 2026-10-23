@@ -153,12 +153,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $onlinePaymentDiscount = $discountType === 'percentage'
                         ? ($totalCost * $discountValue) / 100
                         : $discountValue;
-                    $totalCost = max(0, $totalCost - $onlinePaymentDiscount);
+                    $onlinePaymentDiscount = min($totalCost, max(0, $onlinePaymentDiscount));
+                    $totalCost -= $onlinePaymentDiscount;
                 }
             }
 
-            $profit = round($saleTotal - $totalCost, 2);
-            $shortfall = round(max(0, $totalCost - $saleTotal), 2);
+            // NOTE16: Customer pays item selling prices PLUS delivery once.
+            // The courier delivery component is already part of the cost; therefore
+            // it must also be included in the customer's revenue before profit.
+            $customerBill = $saleTotal + $deliveryCharge;
+            $profit = round($customerBill - $totalCost, 2);
+            $shortfall = round(max(0, $totalCost - $customerBill), 2);
             if ($shortfall > $lockedBalance) {
                 throw new Exception('এই কম/শূন্য বিক্রয় মূল্যের জন্য ব্যালেন্সে পর্যাপ্ত টাকা নেই। ঘাটতি: ' . formatPrice($shortfall) . ', বর্তমান ব্যালেন্স: ' . formatPrice($lockedBalance));
             }
@@ -166,13 +171,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $orderNumber = 'RS' . date('Ymd') . strtoupper(substr(uniqid(), -4));
             $paymentStatus = $paymentMethod === 'online' ? 'pending_verification' : 'pending';
 
-            $orderStmt = $pdo->prepare("\n                INSERT INTO resell_orders\n                (order_number, reseller_id, customer_name, customer_phone, customer_email, shipping_address, shipping_area,\n                 original_price, delivery_charge, reseller_price, profit, shortfall_amount, shortfall_deducted, shortfall_refunded,\n                 notes, payment_method, payment_type, payment_number, transaction_id, payment_status)\n                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)\n            ");
+            $orderStmt = $pdo->prepare("\n                INSERT INTO resell_orders\n                (order_number, reseller_id, customer_name, customer_phone, customer_email, shipping_address, shipping_area,\n                 original_price, delivery_charge, reseller_price, profit, shortfall_amount, shortfall_deducted, shortfall_refunded,\n                 notes, payment_method, payment_type, payment_number, transaction_id, payment_status,
+                 pricing_version, checkout_discount)\n                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)\n            ");
             $orderStmt->execute([
                 $orderNumber, $resellerId, $customerName, $customerPhone, $customerEmail ?: null,
                 $shippingAddress, $shippingArea, $originalTotal, $deliveryCharge, $saleTotal, $profit,
                 $shortfall, $shortfall > 0 ? 1 : 0, 0,
                 $notes ?: null, $paymentMethod, $onlinePaymentType ?: null, $paymentNumber ?: null,
-                $transactionId ?: null, $paymentStatus
+                $transactionId ?: null, $paymentStatus, 2, $onlinePaymentDiscount
             ]);
             $orderId = (int)$pdo->lastInsertId();
 
@@ -364,8 +370,8 @@ include __DIR__ . '/includes/header.php';
                     <div class="summary-row"><span>ডেলিভারি চার্জ</span><strong id="deliveryCharge"><?php echo formatPrice($initialDeliveryCharge); ?></strong></div>
                     <div class="summary-row"><span>মোট খরচ</span><strong id="totalCost"><?php echo formatPrice($baseTotal + $initialDeliveryCharge); ?></strong></div>
                     <div class="summary-row"><span>কাস্টমারের মোট বিক্রয় মূল্য</span><strong id="resellerTotal"><?php echo $allPricesEntered ? formatPrice($enteredSaleTotal + $initialDeliveryCharge) : '—'; ?></strong></div>
-                    <div class="summary-row"><span>ব্যালেন্স থেকে কর্তন</span><strong id="shortfallAmount"><?php echo $allPricesEntered ? formatPrice(max(0, ($baseTotal + $initialDeliveryCharge) - $enteredSaleTotal)) : '—'; ?></strong></div>
-                    <div class="summary-row final"><span>আপনার প্রফিট</span><strong id="profitAmount" class="<?php echo $allPricesEntered ? ($enteredSaleTotal >= ($baseTotal + $initialDeliveryCharge) ? 'profit-positive' : 'profit-negative') : ''; ?>"><?php echo $allPricesEntered ? formatPrice($enteredSaleTotal - ($baseTotal + $initialDeliveryCharge)) : '—'; ?></strong></div>
+                    <div class="summary-row"><span>ব্যালেন্স থেকে কর্তন</span><strong id="shortfallAmount"><?php echo $allPricesEntered ? formatPrice(max(0, $baseTotal - $enteredSaleTotal)) : '—'; ?></strong></div>
+                    <div class="summary-row final"><span>আপনার প্রফিট</span><strong id="profitAmount" class="<?php echo $allPricesEntered ? ($enteredSaleTotal >= $baseTotal ? 'profit-positive' : 'profit-negative') : ''; ?>"><?php echo $allPricesEntered ? formatPrice($enteredSaleTotal - $baseTotal) : '—'; ?></strong></div>
                     <button type="submit" class="btn btn-primary w-100 py-3 mt-3 fw-bold" <?php echo $currentBalance < $minBalance ? 'disabled' : ''; ?>><i class="bi bi-check-circle me-2"></i>অর্ডার কনফার্ম করুন</button>
                 </div>
             </div>
@@ -375,6 +381,13 @@ include __DIR__ . '/includes/header.php';
 
 <script>
 const forcedCustomCharge = <?php echo $forcedCustomCharge !== null ? json_encode((float)$forcedCustomCharge) : 'null'; ?>;
+const note16DiscountType = <?php echo json_encode(getSettings('online_payment_discount_type_resell') ?? 'fixed'); ?>;
+const note16DiscountValue = <?php echo json_encode((float)(getSettings('online_payment_discount_value_resell') ?? 0)); ?>;
+function note16EffectiveCost(cost) {
+    if (document.querySelector('input[name="payment_method"]:checked')?.value !== 'online') return cost;
+    const raw = note16DiscountType === 'percentage' ? cost * note16DiscountValue / 100 : note16DiscountValue;
+    return cost - Math.min(cost, Math.max(0, raw));
+}
 function formatResellMoney(value) { return '৳' + Number(value).toLocaleString('bn-BD', {maximumFractionDigits: 2}); }
 function currentDeliveryCharge() {
     if (forcedCustomCharge !== null) return Number(forcedCustomCharge) || 0;
@@ -398,7 +411,7 @@ function recalculateCheckout() {
         }
     });
     const delivery = currentDeliveryCharge();
-    const cost = baseTotal + delivery;
+    const cost = note16EffectiveCost(baseTotal + delivery);
     document.getElementById('productTotal').textContent = formatResellMoney(baseTotal);
     document.getElementById('deliveryCharge').textContent = formatResellMoney(delivery);
     document.getElementById('totalCost').textContent = formatResellMoney(cost);
@@ -411,17 +424,19 @@ function recalculateCheckout() {
         profitEl.className = '';
         return;
     }
-    // The customer's bill includes the selected delivery charge. The existing
-    // reseller profit/shortfall policy is preserved for this UI-only revision.
-    const profit = saleTotal - cost;
-    const shortfall = Math.max(0, cost - saleTotal);
-    document.getElementById('resellerTotal').textContent = formatResellMoney(saleTotal + delivery);
+    // The customer pays for items + shipping once. Shipping therefore cancels
+    // from both sides of the profit calculation; never subtract it twice.
+    const customerBill = saleTotal + delivery;
+    const profit = customerBill - cost;
+    const shortfall = Math.max(0, cost - customerBill);
+    document.getElementById('resellerTotal').textContent = formatResellMoney(customerBill);
     document.getElementById('shortfallAmount').textContent = formatResellMoney(shortfall);
     profitEl.textContent = formatResellMoney(profit);
     profitEl.className = profit >= 0 ? 'profit-positive' : 'profit-negative';
 }
 document.querySelectorAll('.selling-price').forEach(input => input.addEventListener('input', recalculateCheckout));
 document.getElementById('deliveryChargeSelect')?.addEventListener('change', recalculateCheckout);
+document.querySelectorAll('input[name="payment_method"]').forEach(input => input.addEventListener('change', recalculateCheckout));
 recalculateCheckout();
 </script>
 

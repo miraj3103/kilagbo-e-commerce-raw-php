@@ -131,12 +131,23 @@ if (isset($_POST['update_customer'])) {
         if ($currentOrder['status'] === 'partial' && abs($newDeliveryCharge - $oldDeliveryCharge) > 0.001) {
             throw new Exception('পার্শিয়াল অর্ডারে ডেলিভারি চার্জ পরিবর্তনের আগে Courier হিসাব সমন্বয় করুন।');
         }
-        $newProfit = round((float)$currentOrder['reseller_price'] - ((float)$currentOrder['original_price'] + $newDeliveryCharge), 2);
-        $newShortfall = resellShortfallAmount(
-            (float)$currentOrder['original_price'],
-            $newDeliveryCharge,
-            (float)$currentOrder['reseller_price']
-        );
+        if ((int)($currentOrder['pricing_version'] ?? 1) >= 2) {
+            // NOTE16: delivery is charged to customer AND incurred as a cost once.
+            // Persist the original online payment discount so Admin edits remain consistent.
+            $newProfit = round(
+                (float)$currentOrder['reseller_price'] - (float)$currentOrder['original_price']
+                + (float)($currentOrder['checkout_discount'] ?? 0), 2
+            );
+            $newShortfall = round(max(0, -$newProfit), 2);
+        } else {
+            // Preserve the accounting basis of orders booked before NOTE16.
+            $newProfit = round((float)$currentOrder['reseller_price'] - ((float)$currentOrder['original_price'] + $newDeliveryCharge), 2);
+            $newShortfall = resellShortfallAmount(
+                (float)$currentOrder['original_price'],
+                $newDeliveryCharge,
+                (float)$currentOrder['reseller_price']
+            );
+        }
 
         // NOTE 08: delivery changes may create/remove a below-cost shortfall.
         // Reconcile the reseller balance transactionally before saving the new totals.
@@ -378,8 +389,8 @@ $statusLabels = [
                         <strong><?php echo formatPrice($order['original_price'] + $order['delivery_charge']); ?></strong>
                     </div>
                     <div class="d-flex justify-content-between mb-2">
-                        <span>বিক্রয় মূল্য:</span>
-                        <strong class="text-primary"><?php echo formatPrice($order['reseller_price']); ?></strong>
+                        <span>কাস্টমারের মোট বিক্রয় মূল্য:</span>
+                        <strong class="text-primary"><?php echo formatPrice($order['reseller_price'] + $order['delivery_charge']); ?></strong>
                     </div>
                     <div class="d-flex justify-content-between mb-2">
                         <span>ব্যালেন্স থেকে ঘাটতি:</span>

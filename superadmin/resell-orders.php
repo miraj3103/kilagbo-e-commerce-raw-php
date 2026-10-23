@@ -252,7 +252,7 @@ $stats = $pdo->query("SELECT
                                 <th>রিসেলার</th>
                                 <th>কাস্টমার</th>
                                 <th>মূল মূল্য</th>
-                                <th>বিক্রয় মূল্য</th>
+                                <th>কাস্টমারের মোট বিল</th>
                                 <th>প্রফিট</th>
                                 <th>স্ট্যাটাস</th>
                                 <th>তারিখ</th>
@@ -274,7 +274,7 @@ $stats = $pdo->query("SELECT
                                     <small class="text-muted"><?php echo $order['customer_phone']; ?></small>
                                 </td>
                                 <td><?php echo formatPrice($order['original_price'] + $order['delivery_charge']); ?></td>
-                                <td><?php echo formatPrice($order['reseller_price']); ?></td>
+                                <td><?php echo formatPrice($order['reseller_price'] + $order['delivery_charge']); ?></td>
                                 <td>
                                     <?php
                                     $isCancelled = in_array($order['status'], ['cancelled', 'returned', 'rejected', 'failed']);

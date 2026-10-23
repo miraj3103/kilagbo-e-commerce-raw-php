@@ -248,8 +248,8 @@ include __DIR__ . '/includes/header.php';
                 <span class="info-value"><?php echo formatPrice($order['original_price'] + $order['delivery_charge']); ?></span>
             </div>
             <div class="info-row">
-                <span class="info-label">বিক্রয় মূল্য</span>
-                <span class="info-value"><?php echo formatPrice($order['reseller_price']); ?></span>
+                <span class="info-label">কাস্টমারের মোট বিক্রয় মূল্য</span>
+                <span class="info-value"><?php echo formatPrice($order['reseller_price'] + $order['delivery_charge']); ?></span>
             </div>
         </div>
         
