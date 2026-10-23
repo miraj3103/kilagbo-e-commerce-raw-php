@@ -323,7 +323,13 @@ $statusLabels = [
                                     </td>
                                     <td><?php echo formatPrice($item['reseller_price']); ?></td>
                                     <td><?php echo $item['quantity']; ?></td>
-                                    <td><?php echo formatPrice($item['reseller_price'] * $item['quantity']); ?></td>
+                                    <td><?php
+                                        // NOTE17: the parent order keeps the exact total in single-product v2 orders.
+                                        $lineTotal = ((int)($order['pricing_version'] ?? 1) >= 2 && count($orderItems) === 1)
+                                            ? (float)$order['reseller_price']
+                                            : (float)$item['reseller_price'] * (int)$item['quantity'];
+                                        echo formatPrice($lineTotal);
+                                    ?></td>
                                 </tr>
                                 <?php endforeach; ?>
                             </tbody>

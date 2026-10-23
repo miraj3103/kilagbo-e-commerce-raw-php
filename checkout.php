@@ -49,6 +49,10 @@ if (!wholesaleIsApproved($pdo)) {
 if (empty($cartItems)) {
     redirect(baseUrl('cart'));
 }
+// NOTE17: this shared checkout also serves wholesale-only baskets.
+// Mixed carts keep the existing general-retail success navigation.
+$isWholesaleOnly = count(array_filter($cartItems, static fn($item) => ($item['section'] ?? '') === 'wholesale')) === count($cartItems);
+if ($isWholesaleOnly) $currentPage = 'wholesale';
 
 // Calculate totals
 $subtotal = 0;
@@ -188,7 +192,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         // Store order info for success page
         $_SESSION['last_order'] = [
             'order_number' => $orderNumber,
-            'total' => $total
+            'total' => $total,
+            'source_section' => $isWholesaleOnly ? 'wholesale' : 'retail'
         ];
         
         redirect(baseUrl('order-success'));

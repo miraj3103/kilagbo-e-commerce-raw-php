@@ -330,8 +330,15 @@
         </div>
     </footer>
 
-<!-- Mobile Sticky Navbar -->
+<!-- Mobile Sticky Navbar: hide only on wholesale-only shared cart. -->
+<?php if (empty($hideWholesaleCartMenus)): ?>
 <div class="mobile-sticky-navbar d-lg-none">
+    <?php if (($currentPage ?? '') !== 'wholesale'): ?>
+    <a href="<?php echo baseUrl('shop'); ?>" class="nav-item <?php echo ($currentPage ?? '') === 'shop' ? 'active' : ''; ?>">
+        <i class="bi bi-shop"></i>
+        <span>শপ</span>
+    </a>
+    <?php endif; ?>
     <a href="<?php echo baseUrl('wishlist'); ?>" class="nav-item <?php echo (isset($currentPage) && $currentPage == 'wishlist') ? 'active' : ''; ?>">
         <div class="icon-wrapper">
             <i class="bi bi-heart"></i>
@@ -357,6 +364,7 @@
         <span>একাউন্ট</span>
     </a>
 </div>
+<?php endif; ?>
 
 <style>
 .mobile-sticky-navbar {
@@ -384,7 +392,7 @@
     color: #666;
     font-size: 0.78rem;
     font-weight: 500;
-    flex: 1 1 33.333%;
+    flex: 1 1 0;
     min-width: 0;
     position: relative;
     transition: all 0.3s ease;

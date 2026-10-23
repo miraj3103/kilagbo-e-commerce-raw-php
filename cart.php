@@ -76,6 +76,14 @@ if (!wholesaleIsApproved($pdo)) {
     $cartItems = array_values(array_filter($cartItems, static fn($item) => $item['section'] !== 'wholesale'));
 }
 
+// NOTE17: classify a wholesale-only cart so the mobile Shop button stays hidden.
+$isWholesaleOnly = !empty($cartItems) &&
+    count(array_filter($cartItems, static fn($item) => ($item['section'] ?? '') === 'wholesale')) === count($cartItems);
+if ($isWholesaleOnly) $currentPage = 'wholesale';
+// Only the wholesale-only shared cart hides navigation menus; all other
+// pages (including wholesale success and checkout) keep their existing menus.
+$hideWholesaleCartMenus = $isWholesaleOnly;
+
 // Calculate totals
 $subtotal = 0;
 foreach ($cartItems as $item) {
@@ -93,6 +101,10 @@ include 'includes/header.php';
 ?>
 
 <style>
+    <?php if ($hideWholesaleCartMenus): ?>
+    /* Wholesale-only cart: hide the top navigation menu, not the checkout. */
+    .main-header .main-nav, .main-header .mobile-menu-toggle, .mobile-nav { display: none !important; }
+    <?php endif; ?>
     .cart-page {
         padding: 40px 0;
     }

@@ -15,6 +15,9 @@ if (!isset($_SESSION['last_order'])) {
 
 $orderInfo = $_SESSION['last_order'];
 unset($_SESSION['last_order']);
+// NOTE17: wholesale-only cart returns to wholesale, not retail.
+$isWholesaleOrder = ($orderInfo['source_section'] ?? '') === 'wholesale';
+if ($isWholesaleOrder) $currentPage = 'wholesale';
 
 include 'includes/header.php';
 ?>
@@ -97,7 +100,7 @@ include 'includes/header.php';
             </p>
             
             <div class="d-flex gap-3 justify-content-center flex-wrap">
-                <a href="<?php echo baseUrl('shop'); ?>" class="btn btn-primary-custom">
+                <a href="<?php echo baseUrl($isWholesaleOrder ? 'wholesale' : 'shop'); ?>" class="btn btn-primary-custom">
                     <i class="bi bi-bag me-2"></i>শপিং চালিয়ে যান
                 </a>
                 <a href="<?php echo baseUrl(); ?>" class="btn btn-outline-custom">

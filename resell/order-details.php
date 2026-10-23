@@ -223,7 +223,11 @@ include __DIR__ . '/includes/header.php';
                     <p class="mb-1">পরিমাণ: <?php echo $item['quantity']; ?> পিস</p>
                     <p class="mb-0">
                         <small class="text-muted">মূল মূল্য: <?php echo formatPrice($item['original_price']); ?></small><br>
-                        <strong>বিক্রয় মূল্য: <?php echo formatPrice($item['reseller_price']); ?></strong>
+                        <?php
+                        $isNote17Single = (int)($order['pricing_version'] ?? 1) >= 2 && count($items) === 1;
+                        $lineSale = $isNote17Single ? (float)$order['reseller_price'] : (float)$item['reseller_price'] * (int)$item['quantity'];
+                        ?>
+                        <strong>মোট বিক্রয় মূল্য: <?php echo formatPrice($lineSale); ?></strong>
                     </p>
                 </div>
             </div>

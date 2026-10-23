@@ -4,10 +4,6 @@
  * Developed by Webnify Bangladesh
  */
 
-// Debugging
-error_reporting(E_ALL);
-ini_set('display_errors', 1);
-
 require_once __DIR__ . '/config.php';
 require_once __DIR__ . '/../includes/resell-shortfall.php';
 
@@ -123,7 +119,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
 
             $originalPrice = (float)$lockedProduct['reseller_price'] * $quantity;
-            $totalResellerPrice = $resellerPrice * $quantity;
+            // NOTE17: the submitted value is the TOTAL selling price for all pieces.
+            $totalResellerPrice = round($resellerPrice, 2);
+            // Legacy resell_order_items.reseller_price represents a per-piece price.
+            $unitResellerPrice = round($totalResellerPrice / $quantity, 2);
             $totalCost = $originalPrice + $deliveryCharge;
 
             // Apply existing online payment discount before final profit/shortfall.
@@ -223,7 +222,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $variationsJson,
                 $quantity,
                 $lockedProduct['reseller_price'],
-                $resellerPrice
+                $unitResellerPrice
             ]);
 
             $pdo->prepare("UPDATE resellers SET total_orders = total_orders + 1 WHERE id = ?")->execute([$resellerId]);
@@ -359,13 +358,58 @@ include __DIR__ . '/includes/header.php';
         color: #fff;
     }
 
-    .note-box {
-        background: #fff3cd;
-        border-radius: 10px;
-        padding: 15px;
-        margin-bottom: 20px;
-        color: #856404;
+    /* NOTE17 UX revision: scoped visual polish; no change to pricing formulas. */
+    .order-card {
+        border: 1px solid #e9edf5;
+        border-radius: 18px;
+        box-shadow: 0 10px 32px rgba(26, 38, 74, .055);
+        padding: 26px;
     }
+    .order-card h5 { font-size: 1.16rem; letter-spacing: -.01em; }
+    .product-preview {
+        align-items: center;
+        gap: 16px;
+        background: #f7f9fe;
+        padding: 18px;
+        border: 1px solid #edf1f8;
+        border-radius: 14px;
+    }
+    .product-preview img { width: 100px; height: 100px; object-fit: contain; background:#fff; }
+    .order-page .form-label { font-weight: 600; margin-bottom: 8px; }
+    .order-page .form-control, .order-page .form-select {
+        min-height: 45px;
+        border-radius: 10px;
+        border-color: #d7e0ed;
+    }
+    .order-page .form-control:focus, .order-page .form-select:focus {
+        border-color: #677bea;
+        box-shadow: 0 0 0 .2rem rgba(102,126,234,.12);
+    }
+    .order-page textarea.form-control { min-height: 78px; }
+    .price-calculator { border: 0; border-radius: 18px; padding: 26px; }
+    .price-calculator .calc-row { gap: 15px; align-items: baseline; }
+    .price-calculator .calc-row span:last-child {
+        margin-left: auto;
+        white-space: nowrap;
+        text-align: right;
+        font-weight: 600;
+    }
+    .price-calculator .calc-row span:first-child { min-width: 0; }
+    .price-calculator .calc-row.profit { align-items: center; }
+    .btn-submit { border-radius: 12px; min-height: 54px; }
+    @media (max-width: 767.98px) {
+        .order-page { padding: 0 10px 32px; }
+        .order-card, .price-calculator { padding: 18px; border-radius: 16px; }
+        .product-preview { padding: 12px; gap: 12px; }
+        .product-preview img { width: 78px; height: 78px; flex-shrink: 0; }
+        .product-preview .info { min-width: 0; }
+        .product-preview .info h6 { overflow-wrap: anywhere; }
+        .order-page .row.g-3 > .col-md-6 { min-width: 0; }
+        .price-calculator .calc-row { font-size: .93rem; }
+        .price-calculator .calc-row.profit { font-size: 1.08rem; }
+        .order-page .btn-submit { min-height: 52px; }
+    }
+
 </style>
 
 <div class="order-page">
@@ -374,11 +418,6 @@ include __DIR__ . '/includes/header.php';
         <i class="bi bi-exclamation-circle me-2"></i><?php echo $error; ?>
     </div>
     <?php endif; ?>
-
-    <div class="note-box">
-        <i class="bi bi-info-circle me-2"></i>
-        <strong>মনে রাখুন:</strong> <?php echo getSettings('reselling_commission_note') ?: 'আপনার প্রফিট = আপনার বিক্রয় মূল্য - (পণ্যের মূল্য + ডেলিভারি চার্জ)'; ?> শূন্য বা মোট খরচের কম দামে বিক্রি করলে ঘাটতি আপনার ব্যালেন্স থেকে কাটা হবে।
-    </div>
 
     <form method="POST" id="orderForm">
         <input type="hidden" name="variations" value="<?php echo htmlspecialchars($variationsParam); ?>">
@@ -415,8 +454,8 @@ include __DIR__ . '/includes/header.php';
                             <input type="number" class="form-control" name="quantity" id="quantity" value="1" min="1" <?php echo $product['stock_quantity'] !== null ? 'max="' . $product['stock_quantity'] . '"' : ''; ?> required>
                         </div>
                         <div class="col-md-6">
-                            <label class="form-label">আপনার বিক্রয় মূল্য (প্রতি পিস) *</label>
-                            <input type="number" class="form-control" name="reseller_price" id="resellerPrice" autocomplete="off" placeholder="যেমন: ৫০০" value="<?php echo htmlspecialchars((string)($_POST['reseller_price'] ?? ''), ENT_QUOTES, 'UTF-8'); ?>" min="0" step="0.01" required>
+                            <label class="form-label">সব পিসের মোট বিক্রয় মূল্য *</label>
+                            <input type="number" class="form-control" name="reseller_price" id="resellerPrice" autocomplete="off" placeholder="মোট বিক্রয়মূল্য" value="<?php echo htmlspecialchars((string)($_POST['reseller_price'] ?? ''), ENT_QUOTES, 'UTF-8'); ?>" min="0" step="0.01" required>
                         </div>
                     </div>
                 </div>
@@ -558,7 +597,7 @@ function calculate() {
 
     const productTotal = productPrice * quantity;
     const totalCost = note16EffectiveCost(productTotal + deliveryCharge);
-    const resellerTotal = resellerPrice * quantity;
+    const resellerTotal = resellerPrice; // NOTE17: total for all pieces, not per piece
     const customerBill = resellerTotal + deliveryCharge;
     const profit = customerBill - totalCost;
     const shortfall = Math.max(0, totalCost - customerBill);

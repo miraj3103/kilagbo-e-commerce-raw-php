@@ -197,8 +197,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $pdo->prepare("INSERT INTO notifications (user_type, type, title, message, link) VALUES ('admin', 'wholesale_order', 'নতুন পাইকারি অর্ডার', ?, ?)")
             ->execute(["নতুন পাইকারি অর্ডার #$orderNumber - " . formatPrice($total), "wholesale-order-view/$orderId"]);
         
-        setFlash('success', 'অর্ডার সফলভাবে সম্পন্ন হয়েছে! অর্ডার নম্বর: ' . $orderNumber);
-        redirect(baseUrl('wholesale'));
+        // NOTE17 follow-up: direct wholesale checkout now uses the shared success
+        // screen with wholesale context, matching the shared-cart checkout flow.
+        // The session is set only after the order and items were successfully saved.
+        $_SESSION['last_order'] = [
+            'order_number' => $orderNumber,
+            'total' => $total,
+            'source_section' => 'wholesale',
+        ];
+        redirect(baseUrl('order-success'));
     }
 }
 
